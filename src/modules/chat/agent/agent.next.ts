@@ -2,7 +2,9 @@ import { pick } from '../../../shared/i18n/locale.js'
 import { categoryLabel, cityLabel } from '../../catalog/catalog.labels.js'
 import type { CatalogListing } from '../../catalog/catalog.model.js'
 import { has, val } from '../profile/profile.model.js'
+import { questions } from '../planner/planner.questions.js'
 import type { QuickReply } from '../planner/planner.service.js'
+import { CITIES } from './agent.fallback.js'
 import { kindName, refOf, shortName } from './agent.facts.js'
 import { inCity, NEXT, type NextKey } from './agent.next.labels.js'
 import type { ToolContext } from './agent.tools.js'
@@ -99,6 +101,70 @@ export function nextSteps(ctx: ToolContext, calledTools: string[], justClicked: 
     else out.push({ kind: 'message', id: `next:${key}`, label, text: fill(pick(NEXT[key].text, locale)), icon: ICON[key] })
   }
   return out
+}
+
+// A yes/no closing question ("გავაკეთო #1-ის მოგების გათვლა?") gets the two obvious answers when the model offered none.
+const YES_NO = /^(?:გსურთ|გინდათ|გავაკეთო|მოვამზადო|გაჩვენოთ|გაჩვენო|ვნახოთ|შევადარო|გამოვთვალო|გავაგრძელოთ|დავიწყოთ|შევამოწმო|მოგწეროთ|დაგეხმაროთ|shall i|should i|do you want|would you like|want me to|хотите|показать|сделать|подготовить|сравнить|посчитать|рассчитать|продолжим)/i
+const YES = { ka: 'კი, გთხოვთ', en: 'Yes, please', ru: 'Да, пожалуйста' }
+const NO = { ka: 'არა, სხვა რამე მაინტერესებს', en: 'No, something else', ru: 'Нет, другое' }
+
+// "განვახორციელო თუ არა …?", "… or not?", "… или нет?" are yes/no questions whatever their first word. So is an
+// offer that opens with a Georgian "shall I / shall we" verb ("გავაანალიზო #1-ის მდებარეობა?"), unless it asks what,
+// which or how, or offers a choice ("#1 თუ #2?").
+const OR_NOT = /(^|\s)თუ არა(\s|\?|$)|\bor not\b|или нет/i
+const SHALL_I = /^[ა-ჰ]{4,}(ო|ოთ)[\s,]/
+const OPEN_QUESTION = /(^|\s)(რა|რას|რომელ\S*|როგორ\S*|სად|როდის|რამდენ\S*|რატომ|ვინ|რისი|რით|თუ)(\s|\?|$)/
+
+const isYesNo = (q: string) => YES_NO.test(q) || OR_NOT.test(q) || (SHALL_I.test(q) && !OPEN_QUESTION.test(q))
+
+export function yesNoChips(question: string | null, locale: 'ka' | 'en' | 'ru'): QuickReply[] {
+  if (!question || !isYesNo(question.trim())) return []
+  return [
+    { kind: 'message', id: 'ai:yes', label: YES[locale], text: YES[locale] },
+    { kind: 'message', id: 'ai:no', label: NO[locale], text: NO[locale] },
+  ]
+}
+
+// Any closing question with obvious answers gets them as buttons when the model offered none (round 6: "თბილისში თუ
+// ბათუმში?" and "Сколько времени…?" had none): yes/no; the options of an either/or question; the form's own options
+// for a question about time or the city.
+export function answerChips(question: string | null, locale: 'ka' | 'en' | 'ru'): QuickReply[] {
+  if (!question) return []
+  const q = question.trim()
+  if (isYesNo(q)) return yesNoChips(q, locale)
+  const message = (label: string, i: number): QuickReply => ({ kind: 'message', id: `ai:${i}`, label, text: label })
+  const choices = choicesIn(q)
+  if (choices.length) return choices.map(message)
+  if (ASKS_TIME.test(q)) return (questions.find((x) => x.id === 'involvement')?.options ?? []).map((o, i) => message(pick(o.label, locale), i))
+  if (ASKS_CITY.test(q)) return CITIES.filter(([c]) => ['Tbilisi', 'Batumi', 'any'].includes(c)).map(([, l], i) => message(pick(l, locale), i))
+  return []
+}
+
+const ASKS_TIME = /დრო(?:ის|ს)?\s|საათ|დათმობ|ჩართულ|сколько времени|уделять|how much time|hands-on|how involved/i
+const ASKS_CITY = /რომელ ქალაქ|რომელი ქალაქ|какой город|каком городе|which city/i
+const OR = /\s(?:თუ|or|или)\s/i
+const ASKS = /(^|\s)(რომელ\S*|რა|სად|which|what|where|какой|какие|какую|где|что)(\s|$)/i
+
+// "თბილისში თუ ბათუმში?" → [თბილისში, ბათუმში]; "Тбилиси, Батуми или Кутаиси?" → three. The option before "or" has
+// as many words as the one after it, unless a colon or dash sets it off. ", თუ …" is "if …", not a choice.
+function choicesIn(q: string): string[] {
+  const body = q.replace(/[*_]/g, '').replace(/\?\s*$/, '')
+  const parts = body.split(OR)
+  if (parts.length !== 2 || /,\s*$/.test(parts[0]!)) return []
+  const right = parts[1]!.split(/[,;:]/)[0]!.trim()
+  const n = right.split(/\s+/).length
+  if (!right || n > 4) return []
+  const set = parts[0]!.match(/[:—–]\s*([^:—–]*)$/)
+  const items = (set ? set[1]! : parts[0]!).split(/,\s*/)
+  // "რომელ ქალაქში ეძებთ, თბილისში თუ ბათუმში?": the part with the question word is the question, not an option.
+  if (items.length > 1 && ASKS.test(items[0]!)) items.shift()
+  else {
+    const first = items[0]!.trim().split(/\s+/)
+    items[0] = (set && first.length <= 4 ? first : first.slice(-n)).join(' ')
+  }
+  const options = [...items, right].map((o) => o.trim())
+  const ok = options.length <= 3 && options.every((o) => o.length > 0 && o.length <= 40) && new Set(options).size === options.length
+  return ok ? options : []
 }
 
 // Answers to the closing question first (at most three), then the next steps (at most two).

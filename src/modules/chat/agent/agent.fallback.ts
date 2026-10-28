@@ -43,6 +43,14 @@ export function missingKeyFacts(p: Profile): KeyFact[] {
   return out
 }
 
+// When the intake form is the right next step: two or more key facts unknown, unless the client already named both
+// the kind of business and the budget ("რესტორანი მინდა, 50 ათასი"). Then they see listings at once, with one
+// question about what is still missing (the decision after round 6, which found the two rules disagreeing).
+export function formWanted(p: Profile): boolean {
+  const missing = missingKeyFacts(p)
+  return missing.length >= 2 && (missing.includes('type') || missing.includes('budget'))
+}
+
 // Budget buckets: the value is the upper bound in GEL (the top bucket stands for "more than 200 000").
 const BUDGET: [number, Localized][] = [
   [30_000, t('30 000 ₾-მდე', 'Up to 30,000 ₾', 'До 30 000 ₾')],
@@ -61,7 +69,7 @@ export function bucketFloor(top: number): number {
   return i > 0 ? BUDGET[i - 1]![0] : 0
 }
 
-const CITIES: [string, Localized][] = [
+export const CITIES: [string, Localized][] = [
   ['Tbilisi', t('თბილისი', 'Tbilisi', 'Тбилиси')],
   ['Batumi', t('ბათუმი', 'Batumi', 'Батуми')],
   ['Kutaisi', t('ქუთაისი', 'Kutaisi', 'Кутаиси')],

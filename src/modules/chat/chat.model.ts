@@ -57,6 +57,7 @@ export const sessionStateSchema = z.object({
   askedRecently: z.array(z.string()).default([]), // the closing questions of the last two answers (never asked again)
   profileEdited: z.array(z.string()).default([]), // facts the client changed in the memory strip since the last answer
   saved: z.array(z.string()).default([]), // listings the client saved (ids), as the browser last reported them
+  chipTexts: z.array(z.string()).default([]), // what the chips offered last turn send: the app's own words skip the topic guard
 })
 
 export type SessionState = z.infer<typeof sessionStateSchema>

@@ -1,7 +1,7 @@
-import { pick, type Locale, type Localized } from '../../../shared/i18n/locale.js'
+import { formatNumber, pick, type Locale, type Localized } from '../../../shared/i18n/locale.js'
 import { categoryLabel, cityLabel, districtLabel } from '../../catalog/catalog.labels.js'
 import type { CatalogListing, Money } from '../../catalog/catalog.model.js'
-import { peerPool, type CatalogSnapshot } from '../../catalog/catalog.service.js'
+import { areaOf, peerPool, type CatalogSnapshot } from '../../catalog/catalog.service.js'
 import { placeHints } from '../../competition/area.service.js'
 import { toGel, type FxRates } from '../../fx/fx.service.js'
 import type { SessionState } from '../chat.model.js'
@@ -63,19 +63,31 @@ export function kindName(l: CatalogListing, locale: Locale): string {
   return kindOf(l, locale)
 }
 
-// Where it is, as precisely as the listing says: a street, else the district, else the city.
+// Where it is, as precisely as the listing says: a street written in the reply's own script, else the district
+// (or the neighbourhood the text names), else the city. "Zurab Gorgiladze Street" never lands in a Georgian answer.
 function placeOf(l: CatalogListing, locale: Locale): string {
-  if (locale === 'ka') {
-    const street = placeHints(`${l.address ?? ''} ${pick(l.title, 'ka')}`).streets[0]
-    if (street) return street.replace(/\s+ქუჩა\b/, ' ქ.').replace(/\s+გამზირი\b/, ' გამზ.')
-  }
-  const district = l.district ?? placeHints(`${pick(l.title, 'ka')} ${l.description.original}`).neighbourhood
-  return districtLabel(district, locale) || cityLabel(l.city, locale)
+  const street = placeHints(`${l.address ?? ''} ${pick(l.title, 'ka')}`).streets.find((x) => SCRIPT[locale].test(x))
+  if (street) return locale === 'ka' ? street.replace(/\s+ქუჩა\b/, ' ქ.').replace(/\s+გამზირი\b/, ' გამზ.') : street
+  return districtOf(l, locale) || cityLabel(l.city, locale)
+}
+
+function districtOf(l: CatalogListing, locale: Locale): string {
+  return districtLabel(l.district ?? placeHints(`${pick(l.title, 'ka')} ${l.description.original}`).neighbourhood, locale)
+}
+
+// The place line of the fact sheet and the table: city and district, the same everywhere ("თბილისი, ვაკე").
+export function placeLine(l: CatalogListing, locale: Locale): string {
+  return [cityLabel(l.city, locale), districtOf(l, locale)].filter(Boolean).join(', ')
+}
+
+const sizeText = (l: CatalogListing, locale: Locale) => {
+  const a = areaOf(l)
+  return a ? `${a} ${AREA_UNIT[locale]}` : ''
 }
 
 // The card's name: kind · place · size.
 export function displayName(l: CatalogListing, locale: Locale): string {
-  return [kindOf(l, locale), placeOf(l, locale), l.area ? `${l.area} ${AREA_UNIT[locale]}` : ''].filter(Boolean).join(' · ')
+  return [kindOf(l, locale), placeOf(l, locale), sizeText(l, locale)].filter(Boolean).join(' · ')
 }
 
 // How the text names it: "საკონდიტრო, ვაკე".
@@ -85,8 +97,8 @@ export function shortName(l: CatalogListing, locale: Locale): string {
 
 // ── Money: per month in GEL, with the figure as the seller wrote it ──
 
-const nf = (locale: Locale | 'model') => new Intl.NumberFormat(locale === 'en' || locale === 'model' ? 'en-US' : locale === 'ru' ? 'ru-RU' : 'ka-GE', { maximumFractionDigits: 0 })
-const range = (a: number, b: number, locale: Locale | 'model') => (Math.abs(b - a) < 1 ? nf(locale).format(a) : `${nf(locale).format(a)}–${nf(locale).format(b)}`)
+const num = (n: number, locale: Locale) => formatNumber(n, locale)
+const range = (a: number, b: number, locale: Locale) => (Math.abs(b - a) < 1 ? num(a, locale) : `${num(a, locale)}–${num(b, locale)}`)
 const SYMBOL: Record<string, string> = { GEL: '₾', USD: '$', EUR: '€' }
 const PER_MONTH: Localized = t('/თვე', '/month', '/мес.')
 const PER: Record<'day' | 'week' | 'year', Localized> = { day: t('დღეში', 'a day', 'в день'), week: t('კვირაში', 'a week', 'в неделю'), year: t('წელიწადში', 'a year', 'в год') }
@@ -97,16 +109,8 @@ function monthlyGel(m: NonNullable<Money>, rates: FxRates): [number, number] | n
   return lo === null || hi === null ? null : [Math.round(lo), Math.round(hi)]
 }
 
-// For the model: "≈ 5,460 GEL/month (seller: 2,100 USD/month)", "≈ 21,000–24,000 GEL/month (seller: 700–800 GEL a day)".
-function moneyForModel(m: Money, rates: FxRates): string | null {
-  if (!m) return null
-  const gel = monthlyGel(m, rates)
-  const as = m.stated ? `${range(m.stated.min, m.stated.max, 'model')} ${m.currency} ${PER[m.stated.period].en}` : m.currency !== 'GEL' ? `${range(m.min, m.max, 'model')} ${m.currency}/month` : null
-  if (!gel) return as
-  return `≈ ${range(gel[0], gel[1], 'model')} GEL/month${as ? ` (seller wrote: ${as})` : ''}`
-}
-
-// For the UI: "≈ 5 460 ₾/თვე ($2 100)", "≈ 21 000–24 000 ₾/თვე (700–800 ₾ დღეში)".
+// "≈ 5 460 ₾/თვე ($2 100)", "≈ 21 000–24 000 ₾/თვე (700–800 ₾ დღეში)": per month in lari first, then the figure as
+// the seller wrote it. Dollars as "$", never "USD".
 export function moneyForUi(m: Money, rates: FxRates, locale: Locale): string | null {
   if (!m) return null
   const gel = monthlyGel(m, rates)
@@ -117,9 +121,12 @@ export function moneyForUi(m: Money, rates: FxRates, locale: Locale): string | n
   return `≈ ${range(gel[0], gel[1], locale)} ₾${pick(PER_MONTH, locale)}${as ? ` (${as})` : ''}`
 }
 
+const priceText = (l: CatalogListing, locale: Locale) =>
+  l.priceGel === null ? null : `${num(l.priceGel, locale)} ₾${l.currency && l.currency !== 'GEL' && l.price ? ` (${SYMBOL[l.currency] ?? l.currency}${num(l.price, locale)})` : ''}`
+
 // ── Like with like: a 15 m² kiosk is not measured against the median restaurant ──
 
-export type Peers = { medianGel: number; count: number; diffPct: number; basis: string; basisUi: string }
+export type Peers = { medianGel: number; count: number; diffPct: number; basisUi: string }
 
 export function peers(l: CatalogListing, s: CatalogSnapshot, locale: Locale): Peers | null {
   if (l.priceGel === null) return null
@@ -128,17 +135,99 @@ export function peers(l: CatalogListing, s: CatalogSnapshot, locale: Locale): Pe
   const prices = pool.map((x) => x.priceGel!).sort((a, b) => a - b)
   const mid = Math.floor(prices.length / 2)
   const median = Math.round(prices.length % 2 ? prices[mid]! : (prices[mid - 1]! + prices[mid]!) / 2)
-  const type = categoryLabel(l.category, 'en').toLowerCase()
-  const typeUi = categoryLabel(l.category, locale).toLowerCase()
-  const basis = [`${pool.length} ${type} listings`, inCity && l.city ? `in ${l.city}` : 'in all cities', sized ? `of ${sized[0]}–${sized[1]} m²` : ''].filter(Boolean).join(' ')
   const where = inCity && l.city ? cityLabel(l.city, locale) : pick(t('ყველა ქალაქი', 'all cities', 'все города'), locale)
-  const basisUi = `${pool.length} · ${typeUi} · ${where}${sized ? ` · ${sized[0]}–${sized[1]} ${AREA_UNIT[locale]}` : ''}`
-  return { medianGel: median, count: pool.length, diffPct: Math.round((l.priceGel / median - 1) * 100), basis, basisUi }
+  const basisUi = `${pool.length} · ${categoryLabel(l.category, locale).toLowerCase()} · ${where}${sized ? ` · ${sized[0]}–${sized[1]} ${AREA_UNIT[locale]}` : ''}`
+  return { medianGel: median, count: pool.length, diffPct: Math.round((l.priceGel / median - 1) * 100), basisUi }
 }
 
-// ── The fact sheet the model writes from ──
+// ── The facts of a listing, each with where it comes from ──
 
 type Place = SessionState['places'][string]
+type Source = 'listing' | 'seller' | 'calc' | 'map'
+
+const SOURCE: Record<Source, Localized> = {
+  listing: t('(განცხადება)', '(listing)', '(объявление)'),
+  seller: t('(გამყიდველის თქმით)', '(seller says)', '(со слов продавца)'),
+  calc: t('(გათვლა)', '(calculated)', '(расчёт)'),
+  map: t('(რუკა)', '(map)', '(карта)'),
+}
+
+const W = {
+  notStated: t('არ არის მითითებული', 'not stated', 'не указано'),
+  onRequest: t('შეთანხმებით', 'on request', 'по запросу'),
+  closed: t('დაკეტილია', 'closed', 'закрыт'),
+  operating: t('მოქმედი', 'operating', 'работает'),
+  years: t('{n} წელი', '{n} years', '{n} лет'),
+  people: t('{n} თანამშრომელი', '{n} staff', '{n} сотрудников'),
+  vsSimilar: t('{pct} მსგავსებთან (მედიანა {median} ₾; {basis})', '{pct} vs similar (median {median} ₾; {basis})', '{pct} к похожим (медиана {median} ₾; {basis})'),
+  fewSimilar: t('ზომით და ტიპით მსგავსი განცხადებები ცოტაა — ფასი სამართლიანად ვერ შედარდება', 'too few listings of this type and size to compare the price fairly', 'слишком мало похожих объявлений этого типа и размера для честного сравнения цены'),
+  overBudget: t('{over} ₾-ით აღემატება თქვენს ბიუჯეტს ({budget} ₾)', '{over} ₾ over your budget ({budget} ₾)', 'на {over} ₾ выше вашего бюджета ({budget} ₾)'),
+  inBudget: t('ჯდება თქვენს ბიუჯეტში ({budget} ₾)', 'within your budget ({budget} ₾)', 'в пределах вашего бюджета ({budget} ₾)'),
+  competitors: t('{n} პირდაპირი კონკურენტი {r} მ-ში ({n150} — 150 მ-ში){nearest}', '{n} direct competitors within {r} m ({n150} within 150 m){nearest}', '{n} прямых конкурентов в радиусе {r} м ({n150} — в 150 м){nearest}'),
+  nearest: t('; უახლოესი: {list}', '; nearest: {list}', '; ближайшие: {list}'),
+  staffForArea: t('{n} თანამშრომელი {a} მ²-ზე — დაუჯერებლად ბევრია, გადაამოწმეთ', '{n} staff for {a} m² — implausibly many, verify', '{n} сотрудников на {a} м² — неправдоподобно много, проверьте'),
+  fastPayback: t('ნათქვამი მოგებით ფასი {m} თვეში ანაზღაურდება — უჩვეულოდ სწრაფია, გადაამოწმეთ', 'at the stated profit the price pays back in {m} months — unusually fast, verify', 'при заявленной прибыли цена окупается за {m} мес. — подозрительно быстро, проверьте'),
+}
+
+// Seller claims that don't add up (round 6: "30 employees" in a 24 m² café went unchallenged): named on the fact
+// sheet and the card, so the answer and the seller message question them. Under 2 m² a person, or a stated profit
+// that would repay the price within 6 months.
+function doubtsOf(l: CatalogListing, s: CatalogSnapshot, locale: Locale, area: number | null): string[] {
+  const i = l.insights
+  const out: string[] = []
+  const staff = i?.staff.count
+  if (area && staff && staff >= 3 && area / staff < 2) out.push(say(W.staffForArea, locale, { n: staff, a: area }))
+  const profit = i?.financials.profit_monthly ? monthlyGel(i.financials.profit_monthly, s.rates) : null
+  if (profit && profit[1] > 0 && l.priceGel) {
+    const months = Math.round(l.priceGel / profit[1])
+    if (months < 6) out.push(say(W.fastPayback, locale, { m: Math.max(1, months) }))
+  }
+  return out
+}
+
+const say = (text: Localized, locale: Locale, vars: Record<string, string | number> = {}) => Object.entries(vars).reduce((acc, [k, v]) => acc.replaceAll(`{${k}}`, String(v)), pick(text, locale))
+
+export type Fact = { value: string; source: Source } | null
+
+// One function for every place a fact is shown — the fact sheet, the table, the cards — so they cannot disagree.
+export function listingFacts(l: CatalogListing, s: CatalogSnapshot, state: SessionState, locale: Locale, budget?: number) {
+  const i = l.insights
+  const isProperty = ['real_estate', 'commercial_space', 'offices', 'warehouse', 'land'].includes(l.category)
+  const money = (m: Money): Fact => {
+    const v = moneyForUi(m, s.rates, locale)
+    return v ? { value: v, source: 'seller' } : null
+  }
+  const price = priceText(l, locale)
+  const p = peers(l, s, locale)
+  const place = state.places[l.id] as Place | undefined
+  const area = areaOf(l)
+  return {
+    price: { value: price ?? pick(W.onRequest, locale), source: 'listing' } as Fact,
+    place: { value: placeLine(l, locale) || pick(W.notStated, locale), source: 'listing' } as Fact,
+    area: area ? ({ value: `${area} ${AREA_UNIT[locale]}`, source: l.area ? 'listing' : 'seller' } as Fact) : null,
+    status: i?.isOperating === false ? ({ value: pick(W.closed, locale), source: 'seller' } as Fact) : i?.isOperating ? ({ value: pick(W.operating, locale), source: 'seller' } as Fact) : null,
+    rent: isProperty ? null : money(i?.premises.rent_monthly ?? null),
+    rentIncome: isProperty ? money(i?.financials.rent_income_monthly ?? null) : null,
+    revenue: money(i?.financials.revenue_monthly ?? null),
+    profit: money(i?.financials.profit_monthly ?? null),
+    staff: i?.staff.count != null ? ({ value: say(W.people, locale, { n: i.staff.count }), source: 'seller' } as Fact) : null,
+    years: i?.yearsOperating != null ? ({ value: say(W.years, locale, { n: i.yearsOperating }), source: 'seller' } as Fact) : null,
+    vsSimilar: p
+      ? ({ value: say(W.vsSimilar, locale, { pct: `${p.diffPct > 0 ? '+' : ''}${p.diffPct}%`, median: num(p.medianGel, locale), basis: p.basisUi }), source: 'calc' } as Fact)
+      : l.priceGel !== null
+        ? ({ value: pick(W.fewSimilar, locale), source: 'calc' } as Fact)
+        : null,
+    budget:
+      budget && l.priceGel !== null
+        ? ({ value: l.priceGel > budget ? say(W.overBudget, locale, { over: num(l.priceGel - budget, locale), budget: num(budget, locale) }) : say(W.inBudget, locale, { budget: num(budget, locale) }), source: 'calc' } as Fact)
+        : null,
+    competitors: place
+      ? ({ value: say(W.competitors, locale, { n: place.direct, r: place.radiusM, n150: place.within150m, nearest: place.nearest.length ? say(W.nearest, locale, { list: place.nearest.join(', ') }) : '' }), source: 'map' } as Fact)
+      : null,
+    overBudget: Boolean(budget && l.priceGel !== null && l.priceGel > budget),
+    doubts: doubtsOf(l, s, locale, area),
+  }
+}
 
 // What the map showed around a listing, kept for the rest of the chat.
 export function rememberPlace(state: SessionState, id: string, brief: { radiusM: number; direct: number; within150m: number; nearest: string[]; precision: string }): void {
@@ -147,39 +236,45 @@ export function rememberPlace(state: SessionState, id: string, brief: { radiusM:
   if (keys.length > 20) delete state.places[keys[0]!]
 }
 
-const placeText = (p: Place | undefined) =>
-  p ? `${p.direct} direct competitors within ${p.radiusM} m (${p.within150m} of them within 150 m)${p.nearest.length ? `; nearest: ${p.nearest.join(', ')}` : ''} — OpenStreetMap, location found by ${p.precision}` : 'not analysed yet: call location_analysis before saying anything about competitors'
+// ── The fact sheet the model writes from ──
 
-export function factSheet(l: CatalogListing, s: CatalogSnapshot, state: SessionState, locale: Locale) {
-  const i = l.insights
-  const isProperty = ['real_estate', 'commercial_space', 'offices', 'warehouse', 'land'].includes(l.category)
-  const p = peers(l, s, locale)
-  const status = i?.isOperating === false ? 'closed (seller says)' : i?.isOperating ? 'operating (seller says)' : 'not stated'
-  const notStated = 'not stated in the listing'
+// Every value is ready to quote in the reply's language, its source label attached; a fact the listing does not
+// state is named in not_stated.
+export function factSheet(l: CatalogListing, s: CatalogSnapshot, state: SessionState, locale: Locale, budget?: number) {
+  const f = listingFacts(l, s, state, locale, budget)
+  const q = (x: NonNullable<Fact>) => `${x.value} *${pick(SOURCE[x.source], locale)}*`
+  const isProperty = f.rentIncome || ['real_estate', 'commercial_space', 'offices', 'warehouse', 'land'].includes(l.category)
+  const reason = l.insights?.reasonForSale
+  // The listing's own facts, in this order; the ones it does not state are only named in not_stated (the sheets go
+  // with every model call: seven "არ არის მითითებული" lines a listing were most of a sheet).
+  const facts: [string, Fact | string | undefined][] = [
+    ['price', f.price],
+    ['place', f.place],
+    ['area', f.area],
+    ['status', f.status],
+    [isProperty ? 'rent_income' : 'rent', isProperty ? f.rentIncome : f.rent],
+    ['turnover', f.revenue],
+    ['profit', f.profit],
+    ['staff', f.staff],
+    ['years_open', f.years],
+    ['reason_for_sale', reason ?? undefined],
+  ]
+  const stated = facts.flatMap(([k, x]) => (x ? [[k, typeof x === 'string' ? x : q(x)] as const] : []))
+  const notStated = facts.filter(([, x]) => !x).map(([k]) => k)
+  const name = shortName(l, locale)
+  const type = categoryLabel(l.category, locale)
   return {
     ref: `#${refOf(state, l.id)}`,
-    name: shortName(l, locale),
-    id: l.shortId,
-    listing: {
-      type: categoryLabel(l.category, 'en'),
-      place: [cityLabel(l.city, 'en'), districtLabel(l.district, 'en'), l.address].filter(Boolean).join(', ') || 'not stated',
-      price: l.priceGel === null ? (l.negotiable ? 'on request' : 'not stated') : `${nf('model').format(Math.round(l.priceGel))} GEL${l.currency && l.currency !== 'GEL' && l.price ? ` (${nf('model').format(l.price)} ${l.currency})` : ''}`,
-      area_m2: l.area ?? 'not stated',
-    },
-    seller_says: {
-      status,
-      rent_paid: isProperty ? undefined : (moneyForModel(i?.premises.rent_monthly ?? null, s.rates) ?? notStated),
-      rent_income: isProperty ? (moneyForModel(i?.financials.rent_income_monthly ?? null, s.rates) ?? notStated) : undefined,
-      revenue: moneyForModel(i?.financials.revenue_monthly ?? null, s.rates) ?? notStated,
-      profit: moneyForModel(i?.financials.profit_monthly ?? null, s.rates) ?? notStated,
-      staff: i?.staff.count ?? notStated,
-      years_operating: i?.yearsOperating ?? notStated,
-      reason_for_sale: i?.reasonForSale ?? notStated,
-    },
-    calculated: {
-      price_vs_similar: p ? `${p.diffPct > 0 ? '+' : ''}${p.diffPct}% vs the median ${nf('model').format(p.medianGel)} GEL of ${p.basis}` : 'too few similar listings to compare the price fairly',
-    },
-    map: placeText(state.places[l.id]),
+    name,
+    ...(name.startsWith(type) ? {} : { type }),
+    ...(Object.fromEntries(stated) as Record<string, string>),
+    ...(f.vsSimilar ? { price_vs_similar: q(f.vsSimilar) } : {}),
+    // Only over the budget: the rule is to say so, with the amount; a price within it needs no line.
+    ...(f.overBudget && f.budget ? { budget: q(f.budget) } : {}),
+    // No competitors line: the map was not read yet (the brief says to call location_analysis first).
+    ...(f.competitors ? { competitors: q(f.competitors) } : {}),
+    ...(f.doubts.length ? { check: `${f.doubts.join('; ')} *${pick(SOURCE.calc, locale)}*` } : {}),
+    ...(notStated.length ? { not_stated: notStated.join(', ') } : {}),
   }
 }
 
@@ -194,33 +289,36 @@ const TAG = {
   years: t('{n} წელია მუშაობს', '{n} years operating', 'Работает {n} лет'),
   cheaper: t('{p}% იაფი მსგავსებზე', '{p}% below similar', 'На {p}% дешевле похожих'),
   pricier: t('{p}% ძვირი მსგავსებზე', '{p}% above similar', 'На {p}% дороже похожих'),
+  overBudget: t('ბიუჯეტზე {v} ₾-ით მეტი', '{v} ₾ over budget', 'На {v} ₾ выше бюджета'),
   property: t('ქონებაა, არა ბიზნესი', 'Property, not a business', 'Недвижимость, не бизнес'),
+  doubt: t('გადასამოწმებელია', 'Verify the claims', 'Проверьте данные'),
 }
 
 type Tag = ListingCard['reasons'][number]
 
-function tagsFor(l: CatalogListing, s: CatalogSnapshot, locale: Locale): Tag[] {
+function tagsFor(l: CatalogListing, s: CatalogSnapshot, locale: Locale, budget?: number): Tag[] {
   const i = l.insights
-  const say = (key: keyof typeof TAG, vars: Record<string, string | number> = {}) => Object.entries(vars).reduce((acc, [k, v]) => acc.replace(`{${k}}`, String(v)), pick(TAG[key], locale))
   const out: Tag[] = []
   const isProperty = ['real_estate', 'commercial_space', 'offices', 'warehouse', 'land'].includes(l.category)
-  if (i?.isOperating === false) out.push({ code: 'CLOSED', label: say('closed'), tone: 'warn' })
-  if (isProperty) out.push({ code: 'PROPERTY_NOT_BUSINESS', label: say('property'), tone: 'info' })
+  if (budget && l.priceGel !== null && l.priceGel > budget) out.push({ code: 'OVER_BUDGET', label: say(TAG.overBudget, locale, { v: num(l.priceGel - budget, locale) }), tone: 'warn' })
+  if (i?.isOperating === false) out.push({ code: 'CLOSED', label: say(TAG.closed, locale), tone: 'warn' })
+  if (doubtsOf(l, s, locale, areaOf(l)).length) out.push({ code: 'CHECK_CLAIMS', label: say(TAG.doubt, locale), tone: 'warn' })
+  if (isProperty) out.push({ code: 'PROPERTY_NOT_BUSINESS', label: say(TAG.property, locale), tone: 'info' })
   const revenue = moneyForUi(i?.financials.revenue_monthly ?? null, s.rates, locale)
-  if (revenue) out.push({ code: 'REVENUE', label: say('revenue', { v: revenue.replace(/\s*\(.*\)$/, '') }), tone: 'good' })
-  else if (!isProperty && !i?.financials.profit_monthly) out.push({ code: 'NO_FINANCIALS', label: say('noFinancials'), tone: 'warn' })
+  if (revenue) out.push({ code: 'REVENUE', label: say(TAG.revenue, locale, { v: revenue.replace(/\s*\(.*\)$/, '') }), tone: 'good' })
+  else if (!isProperty && !i?.financials.profit_monthly) out.push({ code: 'NO_FINANCIALS', label: say(TAG.noFinancials, locale), tone: 'warn' })
   const rent = moneyForUi(i?.premises.rent_monthly ?? null, s.rates, locale)
-  if (rent) out.push({ code: 'RENT', label: say('rent', { v: rent.replace(/\s*\(.*\)$/, '') }), tone: 'info' })
+  if (rent) out.push({ code: 'RENT', label: say(TAG.rent, locale, { v: rent.replace(/\s*\(.*\)$/, '') }), tone: 'info' })
   const p = peers(l, s, locale)
-  if (p && Math.abs(p.diffPct) >= 15) out.push(p.diffPct < 0 ? { code: 'BELOW_SIMILAR', label: say('cheaper', { p: Math.abs(p.diffPct) }), tone: 'good' } : { code: 'ABOVE_SIMILAR', label: say('pricier', { p: p.diffPct }), tone: 'warn' })
-  if (i?.yearsOperating && i.yearsOperating >= 1) out.push({ code: 'YEARS', label: say('years', { n: i.yearsOperating }), tone: 'good' })
-  if (i?.isOperating && out.length < 3) out.push({ code: 'OPERATING', label: say('operating'), tone: 'good' })
+  if (p && Math.abs(p.diffPct) >= 15) out.push(p.diffPct < 0 ? { code: 'BELOW_SIMILAR', label: say(TAG.cheaper, locale, { p: Math.abs(p.diffPct) }), tone: 'good' } : { code: 'ABOVE_SIMILAR', label: say(TAG.pricier, locale, { p: p.diffPct }), tone: 'warn' })
+  if (i?.yearsOperating && i.yearsOperating >= 1) out.push({ code: 'YEARS', label: say(TAG.years, locale, { n: i.yearsOperating }), tone: 'good' })
+  if (i?.isOperating && out.length < 3) out.push({ code: 'OPERATING', label: say(TAG.operating, locale), tone: 'good' })
   return out.slice(0, 3)
 }
 
 // The card for a listing in this chat: its number, its short name and the facts that set it apart.
-export function cardFor(l: CatalogListing, s: CatalogSnapshot, state: SessionState, locale: Locale, scored?: Scored): ListingCard {
-  return { ...toCard(l, locale, scored, s.rates.USD), n: refOf(state, l.id), name: displayName(l, locale), reasons: tagsFor(l, s, locale) }
+export function cardFor(l: CatalogListing, s: CatalogSnapshot, state: SessionState, locale: Locale, scored?: Scored, budget?: number): ListingCard {
+  return { ...toCard(l, locale, scored, s.rates.USD), area: areaOf(l), n: refOf(state, l.id), name: displayName(l, locale), reasons: tagsFor(l, s, locale, budget) }
 }
 
 // ── The comparison table: the same facts, in the client's language ──
@@ -228,6 +326,7 @@ export function cardFor(l: CatalogListing, s: CatalogSnapshot, state: SessionSta
 const ROW = {
   price: t('ფასი', 'Price', 'Цена'),
   similar: t('მსგავსებთან შედარებით', 'vs similar listings', 'К похожим'),
+  budget: t('ბიუჯეტთან', 'vs your budget', 'К бюджету'),
   place: t('მდებარეობა', 'Location', 'Локация'),
   area: t('ფართობი', 'Area', 'Площадь'),
   status: t('სტატუსი', 'Status', 'Статус'),
@@ -238,13 +337,9 @@ const ROW = {
   staff: t('თანამშრომლები', 'Staff', 'Персонал'),
   years: t('მუშაობის წლები', 'Years operating', 'Лет работы'),
   competitors: t('კონკურენტები ახლოს', 'Competitors nearby', 'Конкуренты рядом'),
-  onRequest: t('შეთანხმებით', 'On request', 'По запросу'),
-  closed: t('დაკეტილია', 'Closed', 'Закрыт'),
-  operating: t('მოქმედი', 'Operating', 'Работает'),
   within: t('{n} — {r} მ-ში', '{n} within {r} m', '{n} в радиусе {r} м'),
 }
 
-// listings: listings side by side (heads link to them) · profit: the three profit scenarios of profit_scenarios.
 export type CompareTable = {
   kind?: 'listings' | 'profit'
   title?: string
@@ -253,37 +348,28 @@ export type CompareTable = {
   rows: { key: string; label: string; values: string[] }[]
 }
 
-export function compareTable(listings: CatalogListing[], s: CatalogSnapshot, state: SessionState, locale: Locale, urlOf: (l: CatalogListing) => string): CompareTable {
+export function compareTable(listings: CatalogListing[], s: CatalogSnapshot, state: SessionState, locale: Locale, urlOf: (l: CatalogListing) => string, budget?: number): CompareTable {
   const L = (k: keyof typeof ROW) => pick(ROW[k], locale)
-  const gel = (n: number) => `${nf(locale).format(Math.round(n))} ₾`
   const dash = '—'
-  const rows: { key: string; label: string; values: string[] }[] = [
-    { key: 'price', label: L('price'), values: listings.map((l) => (l.priceGel === null ? L('onRequest') : gel(l.priceGel))) },
-    {
-      key: 'similar',
-      label: L('similar'),
-      values: listings.map((l) => {
-        const p = peers(l, s, locale)
-        return p ? `${p.diffPct > 0 ? '+' : ''}${p.diffPct}% (${p.basisUi})` : dash
-      }),
-    },
-    { key: 'place', label: L('place'), values: listings.map((l) => [cityLabel(l.city, locale), districtLabel(l.district, locale)].filter(Boolean).join(', ') || dash) },
-    { key: 'area', label: L('area'), values: listings.map((l) => (l.area ? `${l.area} ${AREA_UNIT[locale]}` : dash)) },
-    { key: 'status', label: L('status'), values: listings.map((l) => (l.insights?.isOperating === false ? L('closed') : l.insights?.isOperating ? L('operating') : dash)) },
-    { key: 'rent', label: L('rent'), values: listings.map((l) => moneyForUi(l.insights?.premises.rent_monthly ?? null, s.rates, locale) ?? dash) },
-    { key: 'rent_income', label: L('rentIncome'), values: listings.map((l) => moneyForUi(l.insights?.financials.rent_income_monthly ?? null, s.rates, locale) ?? dash) },
-    { key: 'revenue', label: L('revenue'), values: listings.map((l) => moneyForUi(l.insights?.financials.revenue_monthly ?? null, s.rates, locale) ?? dash) },
-    { key: 'profit', label: L('profit'), values: listings.map((l) => moneyForUi(l.insights?.financials.profit_monthly ?? null, s.rates, locale) ?? dash) },
-    { key: 'staff', label: L('staff'), values: listings.map((l) => (l.insights?.staff.count != null ? String(l.insights.staff.count) : dash)) },
-    { key: 'years', label: L('years'), values: listings.map((l) => (l.insights?.yearsOperating != null ? String(l.insights.yearsOperating) : dash)) },
-    {
-      key: 'competitors',
-      label: L('competitors'),
-      values: listings.map((l) => {
-        const p = state.places[l.id]
-        return p ? L('within').replace('{n}', String(p.direct)).replace('{r}', String(p.radiusM)) : dash
-      }),
-    },
+  const facts = listings.map((l) => listingFacts(l, s, state, locale, budget))
+  const row = (key: string, label: string, pick: (f: (typeof facts)[number], l: CatalogListing) => string | null | undefined) => ({ key, label, values: facts.map((f, i) => pick(f, listings[i]!) || dash) })
+  const rows = [
+    row('price', L('price'), (f) => f.price?.value),
+    row('similar', L('similar'), (f) => (f.vsSimilar && /%/.test(f.vsSimilar.value) ? f.vsSimilar.value : null)),
+    row('budget', L('budget'), (f) => f.budget?.value),
+    row('place', L('place'), (f) => f.place?.value),
+    row('area', L('area'), (f) => f.area?.value),
+    row('status', L('status'), (f) => f.status?.value),
+    row('rent', L('rent'), (f) => f.rent?.value),
+    row('rent_income', L('rentIncome'), (f) => f.rentIncome?.value),
+    row('revenue', L('revenue'), (f) => f.revenue?.value),
+    row('profit', L('profit'), (f) => f.profit?.value),
+    row('staff', L('staff'), (f, l) => (l.insights?.staff.count != null ? String(l.insights.staff.count) : null)),
+    row('years', L('years'), (f, l) => (l.insights?.yearsOperating != null ? String(l.insights.yearsOperating) : null)),
+    row('competitors', L('competitors'), (f, l) => {
+      const p = state.places[l.id]
+      return p ? L('within').replace('{n}', String(p.direct)).replace('{r}', String(p.radiusM)) : null
+    }),
   ]
   return {
     kind: 'listings',

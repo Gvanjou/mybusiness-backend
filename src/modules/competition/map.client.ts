@@ -12,7 +12,7 @@ const ZOOM = 14 // the zoom level that carries every place
 const TIMEOUT_MS = 6_000
 const MAX_TILES = 80 // decoded tiles kept in memory (~1 MB each)
 
-export type MapPlace = { name: string; nameEn: string | null; cls: string; sub: string; lat: number; lon: number; distanceM: number }
+export type MapPlace = { name: string; nameEn: string | null; nameKa: string | null; cls: string; sub: string; lat: number; lon: number; distanceM: number }
 type Tile = { places: Omit<MapPlace, 'distanceM'>[]; addresses: { lat: number; lon: number }[] }
 
 const tiles = new Map<string, Promise<Tile>>()
@@ -53,7 +53,7 @@ async function loadTile(x: number, y: number): Promise<Tile> {
     const p = point(f.toGeoJSON(x, y, ZOOM).geometry)
     if (!p) continue
     const props = f.properties
-    places.push({ name: String(props.name ?? ''), nameEn: props['name:en'] ? String(props['name:en']) : null, cls: String(props.class ?? ''), sub: String(props.subclass ?? ''), ...p })
+    places.push({ name: String(props.name ?? ''), nameEn: props['name:en'] ? String(props['name:en']) : null, nameKa: props['name:ka'] ? String(props['name:ka']) : null, cls: String(props.class ?? ''), sub: String(props.subclass ?? ''), ...p })
   }
   const addresses: Tile['addresses'] = []
   const hn = tile.layers.housenumber

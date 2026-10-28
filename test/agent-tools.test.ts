@@ -142,13 +142,14 @@ async function withListings(titles: string[], fn: (c: () => ToolContext, ids: st
 test('get_listing: numbered once, its card shown once, and a fact sheet with the rent and daily turnover read right', async () => {
   await withListings(['იყიდება კაფე ვაკეში'], async (make, [id]) => {
     const first = make()
-    const r = (await runTool('get_listing', { ref: id!.slice(0, 8) }, first)) as { fact_sheet: { ref: string; name: string; seller_says: { rent_paid: string; revenue: string } } }
+    const r = (await runTool('get_listing', { ref: id!.slice(0, 8) }, first)) as { fact_sheet: { ref: string; name: string; rent: string; turnover: string; price: string } }
     assert.equal(first.out.cards.length, 1, 'shown the first time')
     assert.equal(first.out.cards[0]!.n, 1)
     assert.equal(r.fact_sheet.ref, '#1')
     assert.equal(r.fact_sheet.name, 'კაფე, ვაკე', 'the kind and the district named in the title')
-    assert.match(r.fact_sheet.seller_says.rent_paid, /≈ 2,600 GEL\/month \(seller wrote: 1,000 USD\/month\)/)
-    assert.match(r.fact_sheet.seller_says.revenue, /≈ 21,000–24,000 GEL\/month \(seller wrote: 700–800 GEL a day\)/, 'a daily figure is never passed off as monthly')
+    assert.match(r.fact_sheet.rent, /^≈ 2\s600 ₾\/თვე \(\$1\s000\) \*\(გამყიდველის თქმით\)\*$/, 'ready to quote: lari per month, the dollars as written, its label')
+    assert.match(r.fact_sheet.turnover, /^≈ 21\s000–24\s000 ₾\/თვე \(700–800 ₾ დღეში\) \*\(გამყიდველის თქმით\)\*$/, 'a daily figure is never passed off as monthly')
+    assert.doesNotMatch(JSON.stringify(r.fact_sheet), /USD/, 'no "USD" in a Georgian fact sheet')
     const again = { ...make(), state: { ...first.state, cardsShown: [id!] } }
     const r2 = (await runTool('get_listing', { ref: '#1' }, again)) as { card: string }
     assert.equal(again.out.cards.length, 0, 'not shown again')

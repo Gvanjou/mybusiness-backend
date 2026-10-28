@@ -96,7 +96,7 @@ async function withFallback<T>(task: AiTask, meta: CallMeta, call: (model: strin
   const maxWaitMs = meta.maxWaitMs ?? 3_000
   // Someone is waiting in the chat: a busy model is not retried, the next one is tried at once. Jobs can wait.
   const overloadRetries = meta.sessionId ? 0 : 3
-  const ordered = meta.only ? [meta.only] : quota.order(chain)
+  const ordered = meta.only ? [meta.only] : quota.order(chain, task)
   const models = meta.prefer && ordered.includes(meta.prefer) ? [meta.prefer, ...ordered.filter((m) => m !== meta.prefer)] : ordered
   let timedOut = false
   for (const model of models) {
@@ -106,7 +106,8 @@ async function withFallback<T>(task: AiTask, meta: CallMeta, call: (model: strin
       const started = Date.now()
       try {
         const result = await call(model)
-        quota.markHealthy(model)
+        // For the chat `call` resolves at the first streamed chunk: this is the wait the client feels.
+        quota.recordSuccess(model, Date.now() - started, task)
         quota.recordOk(model)
         return result
       } catch (err) {
@@ -123,10 +124,10 @@ async function withFallback<T>(task: AiTask, meta: CallMeta, call: (model: strin
         logger.warn('gemini call failed', { task, model, status, attempt, ...errorFields(err) })
         if (meta.userSignal?.aborted) throw err // the user left; don't try other models
         if (!isRetryable(err)) throw err
-        // A 503 means Google is overloaded for a while; a slow start may be a one-off.
-        if (isOverloaded(err)) quota.markUnhealthy(model, 5 * 60_000)
-        else if (isTimeout(err)) {
-          quota.markUnhealthy(model, 2 * 60_000)
+        // Overloaded (503), too slow or unreachable: tried after the healthy models for a while. A 429 is not the
+        // model's health: the per-minute and daily limits above handle it.
+        if (status !== 429) quota.recordFailure(model)
+        if (isTimeout(err)) {
           // A second timeout means Google is slow for every model: stop instead of spending more allowance.
           if (timedOut) throw new AiUnavailableError(task)
           timedOut = true
@@ -237,11 +238,11 @@ export const ai = {
         `stream setup on ${model}`,
       )
       const first = await deadline(iterator.next(), firstChunkMs, `first chunk from ${model}`)
-      return { model, started, iterator, first }
+      return { model, started, firstChunkMs: Date.now() - started, iterator, first }
     })
 
     const parts: Part[] = []
-    let usage: { promptTokenCount?: number; candidatesTokenCount?: number } | undefined
+    let usage: { promptTokenCount?: number; candidatesTokenCount?: number; cachedContentTokenCount?: number } | undefined
     let finish: string | undefined
     // The stream stopped before Google said it was finished (silence, the hard cap, a broken connection).
     let stalled = false
@@ -270,6 +271,9 @@ export const ai = {
         for (const text of take(chunk.value)) yield { type: 'text', text }
       }
       logUsage(task, stream.model, 'ok', stream.started, params, usage)
+      // How much of the prompt Google served from its implicit cache: the evidence for (or against) moving CONTEXT
+      // out of the system instruction so the fixed rules and tools form a longer stable prefix.
+      logger.info('agent step', { model: stream.model, firstChunkMs: stream.firstChunkMs, promptTokens: usage?.promptTokenCount, cachedTokens: usage?.cachedContentTokenCount ?? 0, outputTokens: usage?.candidatesTokenCount })
     } catch (err) {
       logUsage(task, stream.model, 'error', stream.started, params, usage)
       if (parts.length === 0) throw err

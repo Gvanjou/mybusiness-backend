@@ -36,8 +36,14 @@ const LEASED = /\b(leased|lease|rented premises|rent is)\b|იჯარ|арен
 const OWNED = /\b(own(ed)? (premises|property|building|space))\b|საკუთრებაშია|საკუთარი ფართ|в собственности|собственное помещение/i
 const OPERATING = /fully operat|operating business|currently operating|running business|მოქმედი|ფუნქციონირებად|действующ|работающ/i
 // Closed now. "დახურული ტერასა" (a covered terrace) is not a closed business, so only the predicate counts.
-const CLOSED = /დახურულია|ამჟამად დახურული|დროებით დახურული|არ ფუნქციონირებს|ამჟამად არ მუშაობს|შეჩერებულია|currently closed|temporarily closed|is closed|not operating|not in operation|не работает|временно закрыт|сейчас закрыт/i
+const CLOSED = /დახურულია|ამჟამად დახურული|დროებით დახურული|არ ფუნქც?იონირებს|ამჟამად არ მუშაობს|შეჩერებულია|currently closed|temporarily closed|is closed|not operating|not in operation|не работает|временно закрыт|сейчас закрыт/i
+// Floor area as sellers write it: "21 კვ.მ", "46 კვ", "120 მ²", "80 m2", "35 sq m", "60 кв.м".
+const AREA = /(\d{1,5}(?:[.,]\d+)?)\s*(?:კვ\.?\s?მ\b|კვ\.?(?![ა-ჰ])|კვადრატ|მ²|მ2|m²|m2\b|sq\.?\s?m|кв\.?\s?м)/i
 const REASON = /(?:reason for (?:the )?sale|selling (?:because|due to)|გაყიდვის მიზეზ\S*|იყიდება იმის გამო|причина продажи)[:\s—-]*([^.\n]{5,120})/i
+// The reason given as a "because" after the sale or the closure: "არ ფუნქციონირებს, რადგან მეპატრონეს საზღვარგარეთ
+// მოუწია წასვლა", "not operating because the owner had to go abroad". It ends at the first comma (a phone number
+// or the rent often follows).
+const REASON_BECAUSE = /(?:იყიდება|ვყიდი|გავყიდი|არ ფუნქც?იონირებს|არ მუშაობს|დახურულია|for sale|selling|not operating|closed|продаю|продаётся|продается|не работает|закрыт)[^.\n]{0,60}?(?:რადგან(?:აც)?|იმიტომ,? რომ|because(?: of)?|due to|since|так как|потому что|в связи с)\s+([^.\n,;]{5,120})/i
 
 const INCLUDED: [RegExp, string][] = [
   [/brand|ბრენდ|бренд/i, 'brand'],
@@ -122,7 +128,10 @@ export function textInsights(p: {
   ]
 
   const tenure = OWNED.test(text) ? 'owned' : LEASED.test(text) ? 'leased' : 'unknown'
-  const reason = text.match(REASON)?.[1]?.trim() ?? null
+  const reason = (text.match(REASON) ?? text.match(REASON_BECAUSE))?.[1]?.trim() ?? null
+  const areaMatch = text.match(AREA)
+  const areaValue = areaMatch ? Number(areaMatch[1]!.replace(',', '.')) : null
+  const area = areaValue !== null && areaValue >= 4 && areaValue <= 20_000 ? Math.round(areaValue) : null
   const included = [...new Set(INCLUDED.filter(([r]) => r.test(text)).map(([, label]) => label))]
 
   const missing = [
@@ -152,7 +161,7 @@ export function textInsights(p: {
     operatingModel: 'unknown',
     skills: [],
     financials: { revenue_monthly: revenue, profit_monthly: profit, rent_income_monthly: rentIncome, other_figures: onRequest ? ['detailed financials (P&L) available on request'] : [] },
-    premises: { tenure: rentPaid && tenure === 'unknown' ? 'leased' : tenure, rent_monthly: rentPaid, lease_terms: null, area_m2: null },
+    premises: { tenure: rentPaid && tenure === 'unknown' ? 'leased' : tenure, rent_monthly: rentPaid, lease_terms: null, area_m2: area },
     staff: { count: staff, stays: null },
     includedAssets: included,
     locationHint: null,

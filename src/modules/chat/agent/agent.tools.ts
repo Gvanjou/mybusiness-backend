@@ -1,5 +1,5 @@
 import { Type, type FunctionDeclaration } from '@google/genai'
-import { pick, type Locale } from '../../../shared/i18n/locale.js'
+import { formatGel, pick, type Locale } from '../../../shared/i18n/locale.js'
 import { alerts } from '../../alerts/alerts.service.js'
 import { categoriesNamed, categoryLabel, cityLabel, knownCategoryKeys, normalizeCity } from '../../catalog/catalog.labels.js'
 import type { CatalogListing } from '../../catalog/catalog.model.js'
@@ -7,6 +7,8 @@ import { catalog, type CatalogSnapshot } from '../../catalog/catalog.service.js'
 import { analyzeArea, competitionBrief, locateAddress, locateListing } from '../../competition/area.service.js'
 import { knowledge } from '../../knowledge/knowledge.service.js'
 import { webSearch } from '../../web/web.service.js'
+import { toGel, type FxRates } from '../../fx/fx.service.js'
+import { extractAmounts } from '../../../shared/text/amounts.js'
 import { analyzeListing } from '../analysis/analysis.tool.js'
 import type { SessionState } from '../chat.model.js'
 import type { EarlierChat } from '../chat.repository.js'
@@ -19,7 +21,7 @@ import { marketFacts, scoreListings } from '../tools/facts.tool.js'
 import { relaxations, search } from '../tools/search.tool.js'
 import type { QuickReply } from '../planner/planner.service.js'
 import { cardFor, compareTable, factSheet, idOfRef, refOf, rememberPlace, shortName, type CompareTable } from './agent.facts.js'
-import { bucketFloor, missingKeyFacts } from './agent.fallback.js'
+import { bucketFloor, formWanted, missingKeyFacts } from './agent.fallback.js'
 import type { IntakeForm } from './agent.model.js'
 
 // Everything the assistant can do besides talking: listings read live from mybusiness.ge, location and
@@ -57,6 +59,7 @@ export type ToolContext = {
   progress: (step: string, count?: number) => Promise<void>
   userText?: string // the client's message this turn, for tools that must honour what it names
   earlier?: EarlierChat[] // the client's other conversations, newest first (read only by recall_previous_chats)
+  discussed?: string[] // listings the last two answers named ("#4"), for the fact sheets in CONTEXT
 }
 
 const GOALS = ['passive_income', 'own_job', 'growth', 'diversification', 'unsure'] as const
@@ -69,188 +72,204 @@ const PROPERTY = ['land', 'real_estate', 'commercial_space']
 const str = (description: string, enumValues?: readonly string[]) => ({ type: Type.STRING, description, ...(enumValues ? { enum: [...enumValues] } : {}) })
 const num = (description: string) => ({ type: Type.NUMBER, description })
 const list = (items: object, description: string) => ({ type: Type.ARRAY, items, description })
-const refParam = str('The listing: "#2" (its number in this chat), its id or mybusiness.ge URL, or its name as the client wrote it')
+const refParam = str('"#2", an id, a URL or the name the client used')
+// The declarations go with every model call, so they say only what the model needs to choose and call each tool
+// (measured: 3 600 tokens before, most of the prompt). The 38 category keys are listed once, on search_listings;
+// elsewhere a near miss ("cafe", "კაფე") is mapped to its key by categoryArgs.
+const categoryList = (description: string) => list({ type: Type.STRING, enum: [...knownCategoryKeys] }, description)
+const categoryKeys = (description: string) => list({ type: Type.STRING }, `${description}: category keys, as in search_listings`)
+const cityList = list({ type: Type.STRING }, 'Cities, in English')
+const scenarios = (description: string) => list({ type: Type.NUMBER }, `${description} for [cautious, realistic, optimistic]`)
 
 export const toolDeclarations: FunctionDeclaration[] = [
   {
     name: 'search_listings',
-    description:
-      'Businesses for sale on mybusiness.ge right now, ranked for this client; returns their fact sheets and shows them as numbered cards. Use when they want options. Filters are optional; the stored profile (budget, cities, types) always applies.',
+    description: 'Businesses for sale on mybusiness.ge, ranked for this client and shown as numbered cards; returns their fact sheets. The profile (budget, cities, types) always applies.',
     parameters: {
       type: Type.OBJECT,
       properties: {
-        categories: list(str('Category key', knownCategoryKeys), 'Business types to search, by key'),
-        cities: list(str('City in English, e.g. Tbilisi'), 'Cities to search'),
-        max_price_gel: num('Upper price limit in GEL (defaults to the profile budget)'),
-        exclude_shown: { type: Type.BOOLEAN, description: 'true to skip listings already shown in this chat ("show me more")' },
+        categories: categoryList('Business types'),
+        cities: cityList,
+        max_price_gel: num('Price limit in GEL (default: the budget)'),
+        exclude_shown: { type: Type.BOOLEAN, description: 'true for "show me more"' },
       },
     },
   },
   {
     name: 'recall_previous_chats',
-    description:
-      "What the client said in their earlier chats (newest first): each chat's title and date, the facts learned about them and the listings it showed. Nothing is applied to this chat: ask the client before using any of it.",
+    description: "The client's earlier chats: titles, dates, facts learned, listings shown. Ask before using any of it here.",
     parameters: { type: Type.OBJECT, properties: {} },
   },
   {
     name: 'get_listing',
-    description: "One listing as the site shows it now: its fact sheet, the seller's full description and our risk notes. Shows its card unless it is already in the chat.",
+    description: "One listing as the site shows it now: fact sheet, the seller's full text, risk notes. Shows its card if new.",
     parameters: { type: Type.OBJECT, properties: { ref: refParam }, required: ['ref'] },
   },
   {
     name: 'analyze_listing',
-    description:
-      'Deeper analysis of one listing: price (against similar listings of the same type and size), risks, missing (information gaps), seller_questions (what is still unknown), similar (comparable listings, shown as cards). For location use location_analysis, for profit profit_scenarios.',
+    description: 'One listing in depth: price (against the same type and size), risks, missing information, seller_questions, similar (shown as cards). Location: location_analysis; profit: profit_scenarios.',
     parameters: { type: Type.OBJECT, properties: { ref: refParam, aspect: str('What to analyse', ASPECTS) }, required: ['ref', 'aspect'] },
   },
   {
     name: 'compare_listings',
-    description:
-      'Side-by-side comparison; shows the comparison table under your text and returns each listing\'s fact sheet with its competitors. Omit refs to compare every listing on screen (the default); refs ["saved"] compares the listings the client saved.',
-    parameters: { type: Type.OBJECT, properties: { refs: list(refParam, 'Only the listings the client named; omit for all on screen') } },
+    description: 'The comparison table under your text, plus each fact sheet with its competitors. Omit refs for every listing on screen; ["saved"] for the saved ones.',
+    parameters: { type: Type.OBJECT, properties: { refs: list(refParam, 'Only the listings the client named') } },
   },
   {
     name: 'market_stats',
-    description: 'Listing counts and asking-price statistics (median, range) on mybusiness.ge by business type and city.',
-    parameters: {
-      type: Type.OBJECT,
-      properties: { categories: list(str('Category key', knownCategoryKeys), 'Business types (empty = all)'), cities: list(str('City in English'), 'Cities (empty = all)') },
-    },
+    description: 'Listing counts and asking-price median and range on mybusiness.ge, by business type and city.',
+    parameters: { type: Type.OBJECT, properties: { categories: categoryKeys('Business types (empty = all)'), cities: cityList } },
   },
   {
     name: 'location_analysis',
     description:
-      'The place and its local competition from the map shown on the listing page: where exactly it is, direct and related competitors by name and distance, what else is within 500 m (offices, schools, hotels, transport, homes), how busy it looks, which uses are rare or saturated for a space. The competitor count is kept in the fact sheet for the rest of the chat. Use it whenever location, competition or "will it work there" matters, and before suggesting what to open in a commercial space.',
+      'The place from the listing\'s map: where it is, competitors by name and distance, what is within 500 m, how busy it looks, which uses are rare or saturated for a space. Use whenever location, competition or "will it work there" matters, and before suggesting uses for a space.',
     parameters: {
       type: Type.OBJECT,
       properties: {
         ref: refParam,
-        address: str('A street address or place, when there is no listing'),
-        city: str('City in English, for an address'),
-        business_type: str("Category key of the business to judge here (default: the listing's own; for a space, the use the client has in mind)", knownCategoryKeys),
-        location_hint: str('A street, landmark or neighbourhood the seller names in the description, when the listing has no exact address'),
+        address: str('An address, when there is no listing'),
+        city: str('City in English, with an address'),
+        business_type: str("Category key to judge here (default: the listing's own; for a space, the client's idea)"),
+        location_hint: str('A street or landmark the description names, when there is no exact address'),
       },
     },
   },
   {
     name: 'profit_scenarios',
-    description:
-      'Three profit scenarios (cautious / realistic / optimistic) computed exactly, with the same cost lines in each, payback and yearly return, and a warning when payback looks unrealistically fast. Use for every profit, income or payback question about a business; give your assumptions as the inputs and explain the results — never compute profit yourself.',
+    description: 'Cautious, realistic and optimistic profit computed exactly, with payback and yearly return. Use for every profit, income or payback question: pass your assumptions, never compute profit yourself.',
     parameters: {
       type: Type.OBJECT,
       properties: {
         ref: refParam,
-        price_gel: num('Price of the business, when there is no listing'),
-        extra_investment_gel: num('Renovation, stock, working capital on top of the price'),
-        revenue_monthly_gel: list(num('GEL'), 'Monthly revenue for [cautious, realistic, optimistic]'),
-        customers_per_day: list(num('customers'), 'Customers a day for [cautious, realistic, optimistic], instead of revenue'),
-        average_check_gel: num('Average spend per customer, with customers_per_day'),
-        open_days_per_month: num('Days open a month (default 30)'),
-        cost_of_goods_pct: num('Cost of goods sold, % of revenue (e.g. 30–35 for a café)'),
-        rent_monthly_gel: num("Rent a month (default: the listing's stated rent)"),
-        staff_monthly_gel: num('All staff wages a month'),
-        owner_salary_monthly_gel: num('What the buyer would pay themselves if they work in it'),
-        utilities_monthly_gel: num('Electricity, gas, water, internet a month'),
-        other_monthly_gel: num('Other fixed costs a month (accounting, marketing, delivery fees…)'),
-        tax_pct_of_revenue: num('Tax as % of revenue (default 1: small business status)'),
+        price_gel: num('Price, when there is no listing'),
+        extra_investment_gel: num('Renovation, stock, working capital'),
+        revenue_monthly_gel: scenarios('Monthly revenue in GEL'),
+        customers_per_day: scenarios('Customers a day, instead of revenue,'),
+        average_check_gel: num('Spend per customer'),
+        open_days_per_month: num('Default 30'),
+        cost_of_goods_pct: num('% of revenue (café ≈ 30–35)'),
+        rent_monthly_gel: num("Default: the listing's rent"),
+        staff_monthly_gel: num('All wages a month'),
+        owner_salary_monthly_gel: num('If the buyer works in it'),
+        utilities_monthly_gel: num('Power, gas, water, internet a month'),
+        other_monthly_gel: num('Accounting, marketing, delivery fees… a month'),
+        tax_pct_of_revenue: num('Default 1 (small business status)'),
       },
     },
   },
   {
     name: 'calculate',
-    description: 'Exact payback and yearly return from a price and a stated monthly profit or rent income (for property). For business profit use profit_scenarios.',
+    description: 'Exact payback and yearly return from a price and a stated monthly profit, or rent income for property.',
     parameters: {
       type: Type.OBJECT,
       properties: {
-        price_gel: num('Price of the business or property'),
-        profit_monthly_gel: num('Net profit per month, after all costs'),
-        rent_monthly_gel: num('Monthly rent income (for property)'),
-        extra_gel: num('Extra investment: renovation, stock, working capital'),
-        owner_salary_monthly_gel: num('Salary the buyer would pay themselves if they work in the business'),
+        price_gel: num('Price'),
+        profit_monthly_gel: num('Net profit a month'),
+        rent_monthly_gel: num('Rent income a month (property)'),
+        extra_gel: num('Renovation, stock, working capital'),
+        owner_salary_monthly_gel: num('If the buyer works in it'),
       },
       required: ['price_gel'],
     },
   },
   {
     name: 'web_search',
-    description: 'Google Search for current facts about Georgia or a market (tourism, population, inflation, wages, rents, sector size, laws, taxes). Not for general business knowledge you already have. Returns a short answer with sources; cite them as [1], [2].',
-    parameters: { type: Type.OBJECT, properties: { query: str('The question to search, in any language') }, required: ['query'] },
+    description: 'Google Search for current facts about Georgia or a market (tourism, wages, rents, laws, taxes), not general knowledge. Cite its sources as [1], [2].',
+    parameters: { type: Type.OBJECT, properties: { query: str('The question') }, required: ['query'] },
   },
   {
     name: 'site_help',
-    description: 'How mybusiness.ge works: posting a listing, packages and fees, contacting sellers, favourites, AI analysis. Use for questions about the site itself.',
-    parameters: { type: Type.OBJECT, properties: { query: str('The question, in any language') }, required: ['query'] },
+    description: 'How mybusiness.ge works: posting a listing, packages and fees, contacting sellers, favourites.',
+    parameters: { type: Type.OBJECT, properties: { query: str('The question') }, required: ['query'] },
   },
   {
     name: 'update_profile',
-    description: 'Remember what the client told you about themselves. Call it whenever they state or clearly imply any of these. Values must be exactly as listed.',
+    description: 'Remember what the client states or clearly implies about themselves. Values exactly as listed.',
     parameters: {
       type: Type.OBJECT,
       properties: {
-        budget_gel: num('Money they have to invest, in GEL (convert from USD/EUR). Never a listing price or a business figure'),
-        goal: str('What they want from the business', GOALS),
+        budget_gel: num('Money they can invest, in GEL (convert USD/EUR). Never a listing price'),
+        goal: str('Goal', GOALS),
         involvement: str('Time they can give', INVOLVEMENT),
         experience: str('Business experience', EXPERIENCE),
-        experience_sectors: list(str('Category key', knownCategoryKeys), 'Sectors they have worked in'),
+        experience_sectors: categoryKeys('Sectors they worked in'),
         risk: str('Risk appetite', RISK),
-        capital_share: str('all = most of their savings, part = a part of their capital', ['all', 'part']),
-        cities: list(str('City in English'), 'Preferred cities'),
+        capital_share: str('all = most of their savings', ['all', 'part']),
+        cities: cityList,
         location_flexible: { type: Type.BOOLEAN, description: 'true when location does not matter' },
-        sectors: list(str('Category key', knownCategoryKeys), 'Business types they want (empty list = open to anything)'),
-        asset_openness: str('Whether rental property is also an option', ['business_only', 'open_to_property']),
-        interest: str('Free-text description of what attracts them, in English'),
+        sectors: categoryKeys('Business types they want (empty = any)'),
+        asset_openness: str('Is rental property also an option', ['business_only', 'open_to_property']),
+        interest: str('What attracts them, in English'),
       },
     },
   },
   {
     name: 'suggest_replies',
-    description: 'Up to 3 one-tap answers to the single question you end with (e.g. "მოქმედი ობიექტი", "დაკეტილიც მაწყობს"). Call it together with your final text. Ends your turn.',
-    parameters: { type: Type.OBJECT, properties: { options: list(str('Short reply, max 6 words, in the reply language'), '2 to 3 options') }, required: ['options'] },
+    description: 'Up to 3 one-tap answers to your closing question. Call it with your final text; ends your turn.',
+    parameters: { type: Type.OBJECT, properties: { options: list(str('Max 6 words, in the reply language'), '2 or 3') }, required: ['options'] },
   },
   {
     name: 'show_form',
-    description:
-      'The intake form (budget, goal, time, city, business type), always the same, with what the client already said pre-selected. Only when two or more of budget, time, city and business type are unknown; write one short sentence before it. Ends your turn.',
+    description: 'The fixed intake form (budget, goal, time, city, type), pre-filled with what is known. Only when two or more of budget, time, city and type are unknown. Ends your turn.',
     parameters: { type: Type.OBJECT, properties: {} },
   },
   {
     name: 'seller_message',
-    description:
-      'A ready-to-send message to the seller of a listing, shown with Copy and Open listing buttons (the client contacts the seller on mybusiness.ge). Use whenever the client asks what to ask the seller, wants to contact them, or asks for their phone number.',
+    description: 'A ready message to the seller, shown with Copy and Open listing. Use when the client asks what to ask the seller, wants to contact them or asks for a phone number.',
     parameters: {
       type: Type.OBJECT,
       properties: {
         ref: refParam,
-        message: str("The message in the reply language: polite greeting, which listing, the client's open questions (real turnover, rent and lease, reason for sale, staff, debts…), a request for documents or a visit. Under 120 words, no placeholders."),
+        message: str('In the reply language, formal and polite throughout (Georgian: "დაინტერესებული ვარ", "თქვენ"): greeting, which listing, the open questions (real turnover, rent and lease, reason for sale, staff, debts, anything on its sheet\'s check line), documents or a visit. Under 120 words, no placeholders.'),
       },
       required: ['ref', 'message'],
     },
   },
   {
     name: 'visit_checklist',
-    description: 'What to check on site for a listing, shown as a tickable checklist the client keeps with the listing. Use when the client plans a visit or asks what to check in person.',
-    parameters: { type: Type.OBJECT, properties: { ref: refParam, items: list(str('One short thing to check, in the reply language'), '6 to 10 items, most important first') }, required: ['ref', 'items'] },
+    description: 'A tickable on-site checklist kept with the listing. Use when the client plans a visit.',
+    parameters: { type: Type.OBJECT, properties: { ref: refParam, items: list(str('Short, in the reply language'), '6 to 10, most important first') }, required: ['ref', 'items'] },
   },
   {
     name: 'create_alert',
-    description:
-      'Save a search and tell the client in this chat when a new matching listing appears ("tell me when a café in Batumi under 30 000 ₾ is listed"). Use when they ask, or when results are thin and they agree. Defaults to the profile.',
+    description: 'Save a search: the client is told in this chat when a new match is listed. Use when they ask, or agree after thin results. Defaults to the profile.',
     parameters: {
       type: Type.OBJECT,
       properties: {
-        categories: list(str('Category key', knownCategoryKeys), 'Business types'),
-        cities: list(str('City in English'), 'Cities'),
-        max_price_gel: num('Upper price limit in GEL'),
-        label: str('Short name for the alert in the reply language, e.g. "კაფე ბათუმში, 30 000 ₾-მდე"'),
+        categories: categoryKeys('Business types'),
+        cities: cityList,
+        max_price_gel: num('Price limit in GEL'),
+        label: str('Short name in the reply language, e.g. "კაფე ბათუმში, 30 000 ₾-მდე"'),
       },
     },
   },
 ]
 
+// The tools offered on a step. One its executor would refuse is left out, which saves its tokens and a refused call:
+// the form when it is not the next step (see formWanted), earlier chats when there are none.
+export function toolsFor(ctx: ToolContext): FunctionDeclaration[] {
+  const named = has(ctx.profile, 'sectors') ? [] : categoriesNamed(ctx.userText ?? '')
+  const profile = named.length ? applyPatch(ctx.profile, { sectors: named }, ctx.turn).profile : ctx.profile
+  const formAllowed = formWanted(profile)
+  return toolDeclarations.filter((t) => (t.name !== 'show_form' || formAllowed) && (t.name !== 'recall_previous_chats' || Boolean(ctx.earlier?.length)))
+}
+
+// The usual cost of goods, % of revenue, for the types that sell food or goods: used when the model gives none.
+const TYPICAL_COGS_PCT: Partial<Record<string, number>> = { restaurants: 32, bakery: 35, bar_nightclub: 30, food_products: 45, supermarket: 75, retail: 60, clothing_store: 55, pharmacy: 70 }
+
 // Tools that end the turn: the UI shows their result, nothing more needs writing.
 export const terminalTools = new Set(['suggest_replies', 'show_form'])
 
 const round = (n: number | null | undefined) => (n === null || n === undefined ? null : Math.round(n))
+
+// Category keys from a tool call. Only search_listings lists the keys as an enum, so elsewhere the model may write a
+// name instead ("cafe", "კაფე"): it is mapped to its key, and anything else is dropped.
+function categoryArgs(values: unknown, allowed: (key: string) => boolean): string[] {
+  if (!Array.isArray(values)) return []
+  const keys = values.flatMap((v) => (typeof v !== 'string' ? [] : knownCategoryKeys.includes(v) || PROPERTY.includes(v) ? [v] : categoriesNamed(v)))
+  return [...new Set(keys)].filter(allowed)
+}
 
 // "#2" → listing #2 of this chat; otherwise an id, a URL or a title.
 function resolveRef(ctx: ToolContext, ref: string): CatalogListing | undefined {
@@ -310,6 +329,11 @@ function focus(ctx: ToolContext, l: CatalogListing): void {
   if (!ctx.state.lastShown.includes(l.id)) ctx.state.lastShown = [l.id]
 }
 
+// The buyer's budget, for "over budget" warnings on fact sheets and cards.
+const budgetOf = (ctx: ToolContext) => val(ctx.profile, 'budgetGel')
+const sheet = (ctx: ToolContext, l: CatalogListing) => factSheet(l, ctx.s, ctx.state, ctx.locale, budgetOf(ctx))
+const card = (ctx: ToolContext, l: CatalogListing, scored?: Parameters<typeof cardFor>[4]) => cardFor(l, ctx.s, ctx.state, ctx.locale, scored, budgetOf(ctx))
+
 const sellerText = (l: CatalogListing, max: number) => (l.description.original || l.description.en || '').slice(0, max)
 
 type Executor = (args: Record<string, unknown>, ctx: ToolContext) => Promise<unknown>
@@ -317,7 +341,7 @@ type Executor = (args: Record<string, unknown>, ctx: ToolContext) => Promise<unk
 const executors: Record<string, Executor> = {
   async search_listings(args, ctx) {
     const turn = ctx.turn
-    const categories = ((args.categories as string[] | undefined) ?? []).filter((c) => ctx.s.categories.includes(c) || PROPERTY.includes(c))
+    const categories = categoryArgs(args.categories, (c) => ctx.s.categories.includes(c) || PROPERTY.includes(c))
     const cities = ((args.cities as string[] | undefined) ?? []).map((c) => normalizeCity(c, ctx.s.cities)).filter((c): c is string => c !== null)
     const maxPrice = typeof args.max_price_gel === 'number' && args.max_price_gel > 0 ? args.max_price_gel : undefined
     // This search's filters on top of the stored profile.
@@ -330,7 +354,9 @@ const executors: Record<string, Executor> = {
     await ctx.progress('live')
     ctx.s = await catalog.get()
     await ctx.progress('searching', ctx.s.listings.length)
-    const exclude = args.exclude_shown ? new Set(ctx.state.refs) : undefined
+    // With a budget, a listing without a price can't be judged against it ("price on request" cards were noise).
+    const unpriced = val(p, 'budgetGel') ? ctx.s.listings.filter((l) => l.priceGel === null).map((l) => l.id) : []
+    const exclude = new Set([...(args.exclude_shown ? ctx.state.refs : []), ...unpriced])
     const options = { track, exclude, strictSectors: categories.length > 0 }
     // The best candidates are read in full (description, figures, address) and ranked again with what they say.
     const first = search(ctx.s, p, options)
@@ -341,7 +367,7 @@ const executors: Record<string, Executor> = {
     await ctx.progress('found', top.length)
 
     // Numbers are given in rank order, so card #n and "#n" in the text are the same listing.
-    const cards = top.map((r) => cardFor(r.listing, ctx.s, ctx.state, ctx.locale, r))
+    const cards = top.map((r) => card(ctx, r.listing, r))
     const fresh = newCards(ctx, cards)
     ctx.out.cards = fresh
     ctx.out.compare = null
@@ -354,8 +380,9 @@ const executors: Record<string, Executor> = {
     return {
       matches: result.ranked.length + (result.wildcard ? 1 : 0),
       data_source: `live from mybusiness.ge (${ctx.s.loadedAt.toISOString().slice(11, 16)} UTC)`,
+      budget_note: top.some((r) => r.listing.priceGel !== null && budgetOf(ctx) && r.listing.priceGel > budgetOf(ctx)!) ? 'Some listings are over the budget (see each fact sheet\'s "budget" line): say so plainly, with the amount, before recommending one.' : undefined,
       shown: top.map((r) => ({
-        ...factSheet(r.listing, ctx.s, ctx.state, ctx.locale),
+        ...sheet(ctx, r.listing),
         fit: { score: r.score, reasons: r.reasons },
         card: fresh.some((c) => c.id === r.listing.id) ? 'shown now' : 'already shown earlier in this chat: refer to it by its number',
         wildcard: r === result.wildcard || undefined,
@@ -389,13 +416,13 @@ const executors: Record<string, Executor> = {
     if (!l) return { error }
     const fit = scoreListings([l], ctx.s, ctx.profile, deriveTrack(ctx.profile)).get(l.id)
     const { facts } = analyzeListing({ listing: l, snapshot: ctx.s, profile: ctx.profile, track: deriveTrack(ctx.profile), locale: ctx.locale, aspect: 'overview' })
-    const card = newCards(ctx, [cardFor(l, ctx.s, ctx.state, ctx.locale, fit)])
-    ctx.out.cards = [...ctx.out.cards, ...card]
+    const shown = newCards(ctx, [card(ctx, l, fit)])
+    ctx.out.cards = [...ctx.out.cards, ...shown]
     ctx.out.compare = null
     focus(ctx, l)
     return {
-      card: card.length ? 'shown now' : 'already in this chat: refer to it by its number',
-      fact_sheet: factSheet(l, ctx.s, ctx.state, ctx.locale),
+      card: shown.length ? 'shown now' : 'already in this chat: refer to it by its number',
+      fact_sheet: sheet(ctx, l),
       risk_notes: { risks: facts.risks, missing: facts.missing, red_flags_in_text: facts.seller_text_red_flags },
       location: { city: l.city, district: l.district, address: l.address, exact_coordinates: l.latitude !== null },
       seller_text: sellerText(l, 2500),
@@ -412,11 +439,11 @@ const executors: Record<string, Executor> = {
     markTopic(ctx.state, l.id, aspect === 'seller_questions' ? 'seller' : aspect)
     if (aspect === 'similar' && analysis.comparables) {
       const similar = analysis.comparables.cards.map((c) => ctx.s.byId.get(c.id)).filter((x): x is CatalogListing => Boolean(x))
-      ctx.out.cards = newCards(ctx, similar.map((x) => cardFor(x, ctx.s, ctx.state, ctx.locale)))
+      ctx.out.cards = newCards(ctx, similar.map((x) => card(ctx, x)))
       ctx.state.lastShown = [l.id, ...similar.map((x) => x.id)]
-      return { listing: factSheet(l, ctx.s, ctx.state, ctx.locale), similar: similar.map((x) => factSheet(x, ctx.s, ctx.state, ctx.locale)) }
+      return { listing: sheet(ctx, l), similar: similar.map((x) => sheet(ctx, x)) }
     }
-    return { listing: factSheet(l, ctx.s, ctx.state, ctx.locale), analysis: facts }
+    return { listing: sheet(ctx, l), analysis: facts }
   },
 
   async compare_listings(args, ctx) {
@@ -428,7 +455,8 @@ const executors: Record<string, Executor> = {
     const shownListings = onScreen.map((id) => ctx.s.byId.get(id)!)
     const wantsSaved = asked.some((r) => /^saved$/i.test(r.trim()))
     const all = !wantsSaved && onScreen.length > asked.length && !namesSpecificListings(ctx.userText ?? '', shownListings)
-    const refs = (wantsSaved ? ctx.state.saved : all || asked.length === 0 ? onScreen : asked).slice(0, MAX_COMPARE)
+    // exact: the app itself asks for these listings (a comparison the model described but never ran).
+    const refs = (wantsSaved ? ctx.state.saved : args.exact ? asked : all || asked.length === 0 ? onScreen : asked).slice(0, MAX_COMPARE)
     const found: CatalogListing[] = []
     for (const r of refs) {
       const { listing } = await liveRef(ctx, r)
@@ -441,18 +469,20 @@ const executors: Record<string, Executor> = {
     // as an earlier location analysis.
     await ctx.progress('competition')
     const todo = found.filter((l) => !ctx.state.places[l.id])
-    const briefs = await Promise.all(todo.map((l) => competitionBrief(l).catch(() => null)))
+    const briefs = await Promise.all(todo.map((l) => competitionBrief(l, ctx.locale).catch(() => null)))
     todo.forEach((l, i) => {
       const b = briefs[i] as { radius_m?: number | null; precision?: string; direct_competitors?: { within_150m: number; within_radius: number } | null; nearest?: string[] } | null
       if (b?.direct_competitors && b.radius_m) rememberPlace(ctx.state, l.id, { radiusM: b.radius_m, direct: b.direct_competitors.within_radius, within150m: b.direct_competitors.within_150m, nearest: (b.nearest ?? []).slice(0, 3), precision: b.precision ?? 'street' })
     })
-    ctx.out.cards = []
-    ctx.out.compare = compareTable(found, ctx.s, ctx.state, ctx.locale, (l) => listingUrl(l, ctx.locale))
+    // A listing compared for the first time (a pasted link) also gets its card, for Open, Save and Compare; the ones
+    // already in the chat are only in the table.
+    ctx.out.cards = newCards(ctx, found.map((l) => card(ctx, l)))
+    ctx.out.compare = compareTable(found, ctx.s, ctx.state, ctx.locale, (l) => listingUrl(l, ctx.locale), budgetOf(ctx))
     ctx.state.lastShown = found.map((l) => l.id)
     for (const l of found) markTopic(ctx.state, l.id, 'compare')
     return {
       listings: found.map((l) => ({
-        ...factSheet(l, ctx.s, ctx.state, ctx.locale),
+        ...sheet(ctx, l),
         fit: fits.get(l.id) ? { score: fits.get(l.id)!.score, reasons: fits.get(l.id)!.reasons } : undefined,
         seller_text: sellerText(l, 1200),
       })),
@@ -462,7 +492,7 @@ const executors: Record<string, Executor> = {
 
   async market_stats(args, ctx) {
     await ctx.progress('market', ctx.s.listings.length)
-    const cats = ((args.categories as string[] | undefined) ?? []).filter((c) => ctx.s.categories.includes(c))
+    const cats = categoryArgs(args.categories, (c) => ctx.s.categories.includes(c))
     const cities = ((args.cities as string[] | undefined) ?? []).map((c) => normalizeCity(c, ctx.s.cities)).filter((c): c is string => c !== null)
     return marketFacts(ctx.s, cats, cities, ctx.locale)
   },
@@ -481,7 +511,7 @@ const executors: Record<string, Executor> = {
     const city = typeof args.city === 'string' ? normalizeCity(args.city, ctx.s.cities) : (listing?.city ?? null)
     const at = address ? await locateAddress(address, city) : listing ? await locateListing(listing, hint) : null
     if (!at) return { error: listing ? 'The listing has no usable location. Ask the client for the street or address.' : 'Give a listing or an address to analyse.' }
-    const type = typeof args.business_type === 'string' && knownCategoryKeys.includes(args.business_type) ? args.business_type : listing && !['commercial_space', 'real_estate', 'offices', 'warehouse', 'land'].includes(listing.category) ? listing.category : null
+    const type = categoryArgs([args.business_type], (c) => knownCategoryKeys.includes(c))[0] ?? (listing && !['commercial_space', 'real_estate', 'offices', 'warehouse', 'land'].includes(listing.category) ? listing.category : null)
     const { facts, sources } = await analyzeArea({ at, listing, businessType: type, s: ctx.s, locale: ctx.locale, sessionId: ctx.sessionId })
     if (sources.length) ctx.out.sources = sources
     if (listing) {
@@ -493,7 +523,7 @@ const executors: Record<string, Executor> = {
       }
     }
     return {
-      listing: listing && factSheet(listing, ctx.s, ctx.state, ctx.locale),
+      listing: listing && sheet(ctx, listing),
       ...facts,
       note: 'Layout: where it is → what is around → competitors with distances → verdict → what to check on site. Quote the competitor count from the fact sheet\'s "map" line (one count, one radius). Map counts are a minimum (small or new places can be missing).',
     }
@@ -520,7 +550,11 @@ const executors: Record<string, Executor> = {
     const stated = listing?.insights?.premises.rent_monthly
     const statedRent = stated ? ((stated.min + stated.max) / 2) * (ctx.s.rates[stated.currency] ?? 1) : null
     const rent = n(args.rent_monthly_gel) ?? statedRent ?? 0
-    const cogsPct = n(args.cost_of_goods_pct) ?? 0
+    // No cost of goods for a business that sells food or goods would overstate its profit many times over (round 6: a
+    // café "earning" 58 000 ₾ a month, paid back in "0 months"): the type's usual share is used and says so.
+    const typicalCogs = listing ? TYPICAL_COGS_PCT[listing.category] : undefined
+    const cogsGiven = n(args.cost_of_goods_pct)
+    const cogsPct = cogsGiven ?? typicalCogs ?? 0
     const taxPct = n(args.tax_pct_of_revenue) ?? 1
     const fixedCosts = { rent: Math.round(rent), staff: Math.round(n(args.staff_monthly_gel) ?? 0), owner_salary: Math.round(n(args.owner_salary_monthly_gel) ?? 0), utilities: Math.round(n(args.utilities_monthly_gel) ?? 0), other: Math.round(n(args.other_monthly_gel) ?? 0) }
     const fixedTotal = Object.values(fixedCosts).reduce((a, b) => a + b, 0)
@@ -530,7 +564,7 @@ const executors: Record<string, Executor> = {
       const cogs = Math.round((rev * cogsPct) / 100)
       const tax = Math.round((rev * taxPct) / 100)
       const profit = Math.round(rev - cogs - tax - fixedTotal)
-      const payback = profit > 0 ? Math.round(total / profit) : null
+      const payback = profit > 0 ? Math.max(1, Math.round(total / profit)) : null
       return { scenario: names[i]!, revenue_monthly_gel: Math.round(rev), cost_of_goods_gel: cogs, tax_gel: tax, fixed_costs_gel: fixedTotal, net_profit_monthly_gel: profit, payback_months: payback, yearly_return_pct: profit > 0 ? Math.round(((profit * 12) / total) * 100) : null }
     })
     const warnings: string[] = []
@@ -538,12 +572,13 @@ const executors: Record<string, Executor> = {
     if (scenarios.some((x) => x.net_profit_monthly_gel <= 0)) warnings.push('At least one scenario loses money: say which.')
     if (!fixedCosts.staff && !fixedCosts.owner_salary) warnings.push('No staff or owner salary in the costs: the profit only holds if the owner works for free — say so, or recompute with staff.')
     if (!cogsPct) warnings.push('No cost of goods given: profit is overstated for any business that sells goods or food.')
-    ctx.out.compare = profitTable(scenarios, fixedCosts, cogsPct, taxPct, total, ctx.locale)
+    else if (cogsGiven === null) warnings.push(`No cost of goods given: the usual ${cogsPct}% for this type was used — say it is an assumption.`)
+    ctx.out.compare = profitTable(scenarios, fixedCosts, cogsPct, taxPct, total, ctx.locale, cogsGiven === null && cogsPct > 0)
     if (listing) markTopic(ctx.state, listing.id, 'profit')
     return {
-      listing: listing && factSheet(listing, ctx.s, ctx.state, ctx.locale),
+      listing: listing && sheet(ctx, listing),
       investment_gel: { price, extra, total },
-      same_cost_lines_in_every_scenario: { cost_of_goods_pct: cogsPct, tax_pct_of_revenue: taxPct, ...fixedCosts, rent_source: n(args.rent_monthly_gel) !== null ? 'your assumption' : statedRent ? 'the listing (seller says)' : 'not given' },
+      same_cost_lines_in_every_scenario: { cost_of_goods_pct: cogsPct, cost_of_goods_source: cogsGiven !== null ? 'your assumption' : cogsPct ? 'usual for this type' : 'not given', tax_pct_of_revenue: taxPct, ...fixedCosts, rent_source: n(args.rent_monthly_gel) !== null ? 'your assumption' : statedRent ? 'the listing (seller says)' : 'not given' },
       scenarios,
       warnings,
       note: 'The scenario table is on screen. Explain these numbers; do not recompute or change them. Label the revenue as your estimate and the rent by its source.',
@@ -600,8 +635,8 @@ const executors: Record<string, Executor> = {
     if (enumOk(args.risk, RISK)) patch.risk = args.risk
     if (enumOk(args.capital_share, ['all', 'part'] as const)) patch.capitalShare = args.capital_share
     if (enumOk(args.asset_openness, ['business_only', 'open_to_property'] as const)) patch.assetOpenness = args.asset_openness
-    if (Array.isArray(args.sectors)) patch.sectors = args.sectors.filter((c) => typeof c === 'string' && (ctx.s.categories.includes(c) || PROPERTY.includes(c)))
-    if (Array.isArray(args.experience_sectors)) patch.experienceSectors = args.experience_sectors.filter((c) => typeof c === 'string' && knownCategoryKeys.includes(c))
+    if (Array.isArray(args.sectors)) patch.sectors = categoryArgs(args.sectors, (c) => ctx.s.categories.includes(c) || PROPERTY.includes(c))
+    if (Array.isArray(args.experience_sectors)) patch.experienceSectors = categoryArgs(args.experience_sectors, (c) => knownCategoryKeys.includes(c))
     if (Array.isArray(args.cities)) {
       const cities = args.cities.map((c) => normalizeCity(String(c), ctx.s.cities)).filter((c): c is string => c !== null)
       if (cities.length) {
@@ -637,8 +672,8 @@ const executors: Record<string, Executor> = {
     const named = has(ctx.profile, 'sectors') ? [] : categoriesNamed(ctx.userText ?? '')
     if (named.length) ctx.profile = applyPatch(ctx.profile, { sectors: named }, ctx.turn).profile
     const missing = missingKeyFacts(ctx.profile)
-    if (missing.length < 2) {
-      return { error: `Do not show the form: only ${missing.length ? missing.join(' and ') : 'nothing'} is unknown. ${missing.length ? 'Search now if you can, and ask about it in one short question at the end.' : 'Search now.'}` }
+    if (!formWanted(ctx.profile)) {
+      return { error: `Do not show the form: only ${missing.length ? missing.join(' and ') : 'nothing'} is unknown and the client named what they want. ${missing.length ? 'Search now, and ask about the most important missing fact in one short question at the end.' : 'Search now.'}` }
     }
     ctx.out.formRequested = true
     return { shown: true, note: 'The form appears under your reply with what the client already said pre-selected. Write one short sentence before it; do not list its questions.' }
@@ -647,7 +682,8 @@ const executors: Record<string, Executor> = {
   async seller_message(args, ctx) {
     const { listing: l, error } = await liveRef(ctx, String(args.ref ?? ''))
     if (!l) return { error }
-    const text = String(args.message ?? '').trim().slice(0, 1500)
+    // Models name the field "message", "text" or "body"; any of them is the message.
+    const text = String(args.message ?? args.text ?? args.body ?? args.content ?? '').trim().slice(0, 1500)
     if (text.length < 20) return { error: 'Write the whole message in "message".' }
     ctx.out.handoff = { listingId: l.id, n: refOf(ctx.state, l.id), name: shortName(l, ctx.locale), url: listingUrl(l, ctx.locale), text }
     focus(ctx, l)
@@ -668,7 +704,9 @@ const executors: Record<string, Executor> = {
 
   async create_alert(args, ctx) {
     if (!ctx.userId) return { error: 'Alerts need a signed-in client.' }
-    const categories = ((args.categories as string[] | undefined) ?? val(ctx.profile, 'sectors') ?? []).filter((c) => knownCategoryKeys.includes(c))
+    // Types the model named but that match no key fall back to the profile: an alert for every type is never meant.
+    const named = categoryArgs(args.categories, (c) => knownCategoryKeys.includes(c))
+    const categories = named.length || (Array.isArray(args.categories) && !args.categories.length) ? named : (val(ctx.profile, 'sectors') ?? []).filter((c) => knownCategoryKeys.includes(c))
     const cities = ((args.cities as string[] | undefined) ?? val(ctx.profile, 'cities') ?? []).map((c) => normalizeCity(String(c), ctx.s.cities)).filter((c): c is string => c !== null)
     const maxPriceGel = typeof args.max_price_gel === 'number' && args.max_price_gel > 0 ? Math.round(args.max_price_gel) : (val(ctx.profile, 'budgetGel') ?? null)
     const label =
@@ -687,6 +725,27 @@ const executors: Record<string, Executor> = {
 
 const MAX_COMPARE = 4
 
+// The message to the seller when the model talked about it but never produced one: the analysis' own draft (the
+// listing's open questions), so the buyer always gets the card with Copy and Open listing.
+export function fallbackHandoff(ctx: ToolContext, l: CatalogListing): void {
+  const { analysis } = analyzeListing({ listing: l, snapshot: ctx.s, profile: ctx.profile, track: deriveTrack(ctx.profile), locale: ctx.locale, aspect: 'seller_questions' })
+  const draft = analysis.questions?.draft
+  if (!draft) return
+  ctx.out.handoff = { listingId: l.id, n: refOf(ctx.state, l.id), name: shortName(l, ctx.locale), url: listingUrl(l, ctx.locale), text: draft }
+  markTopic(ctx.state, l.id, 'seller')
+}
+
+// The budget a client states in a message ("50 ათასი მაქვს", "30 ათასამდე", "5 000 ლარად", "до 30 000"), in GEL, so
+// the form and the search use it even when the model forgets to call update_profile.
+export function statedBudget(text: string, rates: FxRates): number | null {
+  const amounts = extractAmounts(text)
+  const forAmount = /ლარად|დოლარად|ევროდ|\$-?ად/.test(text)
+  const a = amounts.find((x) => x.role === 'budget') ?? (forAmount ? amounts.find((x) => x.role === 'unknown') : undefined)
+  if (!a) return null
+  const gel = toGel(a.max ?? a.value, a.currency, rates)
+  return gel && gel >= 500 ? Math.round(gel) : null
+}
+
 // The three profit scenarios as a table under the answer: the same cost lines in every column.
 function profitTable(
   scenarios: { scenario: string; revenue_monthly_gel: number; cost_of_goods_gel: number; tax_gel: number; net_profit_monthly_gel: number; payback_months: number | null; yearly_return_pct: number | null }[],
@@ -695,12 +754,13 @@ function profitTable(
   taxPct: number,
   total: number,
   locale: Locale,
+  cogsTypical = false,
 ): CompareTable {
   const t = (ka: string, en: string, ru: string) => pick({ ka, en, ru }, locale)
-  const f = new Intl.NumberFormat(locale === 'en' ? 'en-US' : locale === 'ru' ? 'ru-RU' : 'ka-GE', { maximumFractionDigits: 0 })
-  const gel = (x: number) => `${f.format(x)} ₾`
+  const gel = (x: number) => formatGel(x, locale)
   const names = { cautious: t('ფრთხილი', 'Cautious', 'Осторожный'), realistic: t('რეალისტური', 'Realistic', 'Реалистичный'), optimistic: t('ოპტიმისტური', 'Optimistic', 'Оптимистичный') } as Record<string, string>
   const months = t('თვე', 'months', 'мес.')
+  const fast = t('უჩვეულოდ სწრაფია, გადაამოწმეთ შემოსავალი', 'unusually fast, verify the revenue', 'подозрительно быстро, проверьте выручку')
   const fixedRow = (key: string, label: string) => (fixed[key] ? [{ key, label, values: scenarios.map(() => `−${gel(fixed[key]!)}`) }] : [])
   return {
     kind: 'profit',
@@ -709,7 +769,7 @@ function profitTable(
     heads: scenarios.map((s) => ({ id: s.scenario, name: names[s.scenario] ?? s.scenario })),
     rows: [
       { key: 'revenue', label: t('შემოსავალი', 'Revenue', 'Выручка'), values: scenarios.map((s) => gel(s.revenue_monthly_gel)) },
-      ...(cogsPct ? [{ key: 'cogs', label: t(`პროდუქციის ღირებულება (${cogsPct}%)`, `Cost of goods (${cogsPct}%)`, `Себестоимость (${cogsPct}%)`), values: scenarios.map((s) => `−${gel(s.cost_of_goods_gel)}`) }] : []),
+      ...(cogsPct ? [{ key: 'cogs', label: cogsTypical ? t(`პროდუქციის ღირებულება (${cogsPct}%, ტიპური)`, `Cost of goods (${cogsPct}%, typical)`, `Себестоимость (${cogsPct}%, типично)`) : t(`პროდუქციის ღირებულება (${cogsPct}%)`, `Cost of goods (${cogsPct}%)`, `Себестоимость (${cogsPct}%)`), values: scenarios.map((s) => `−${gel(s.cost_of_goods_gel)}`) }] : []),
       ...fixedRow('rent', t('ქირა', 'Rent', 'Аренда')),
       ...fixedRow('staff', t('პერსონალი', 'Staff', 'Персонал')),
       ...fixedRow('owner_salary', t('მფლობელის ხელფასი', 'Owner salary', 'Зарплата владельца')),
@@ -717,7 +777,8 @@ function profitTable(
       ...fixedRow('other', t('სხვა ხარჯები', 'Other costs', 'Прочие расходы')),
       { key: 'tax', label: t(`გადასახადი (${taxPct}%)`, `Tax (${taxPct}%)`, `Налог (${taxPct}%)`), values: scenarios.map((s) => `−${gel(s.tax_gel)}`) },
       { key: 'profit', label: t('წმინდა მოგება', 'Net profit', 'Чистая прибыль'), values: scenarios.map((s) => gel(s.net_profit_monthly_gel)) },
-      { key: 'payback', label: t(`ანაზღაურება (${gel(total)})`, `Payback (${gel(total)})`, `Окупаемость (${gel(total)})`), values: scenarios.map((s) => (s.payback_months === null ? '—' : `${s.payback_months} ${months}`)) },
+      // Under 6 months is unusually fast for a business: said in the table itself, so no answer can skip it.
+      { key: 'payback', label: t(`ანაზღაურება (${gel(total)})`, `Payback (${gel(total)})`, `Окупаемость (${gel(total)})`), values: scenarios.map((s) => (s.payback_months === null ? '—' : `${s.payback_months} ${months}${s.payback_months < 6 ? ` — ${fast}` : ''}`)) },
     ],
   }
 }

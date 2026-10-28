@@ -1,8 +1,8 @@
 import type { Locale, Localized } from '../../shared/i18n/locale.js'
 
 const categories: Record<string, Localized> = {
-  restaurants: { ka: 'რესტორანი', en: 'Restaurant', ru: 'Ресторан' },
-  bakery: { ka: 'საცხობი / კაფე', en: 'Bakery / café', ru: 'Пекарня / кафе' },
+  restaurants: { ka: 'კაფე / რესტორანი', en: 'Café / restaurant', ru: 'Кафе / ресторан' },
+  bakery: { ka: 'საცხობი / საკონდიტრო', en: 'Bakery / pastry shop', ru: 'Пекарня / кондитерская' },
   bar_nightclub: { ka: 'ბარი / ღამის კლუბი', en: 'Bar / nightclub', ru: 'Бар / ночной клуб' },
   hotels: { ka: 'სასტუმრო', en: 'Hotel', ru: 'Гостиница' },
   event_venue: { ka: 'ღონისძიებების დარბაზი', en: 'Event venue', ru: 'Банкетный зал' },
@@ -150,19 +150,21 @@ export function categoryLabel(key: string, locale: Locale): string {
 
 // Business types named in a message ("რესტორანი მინდა", "хочу автомойку", "a car wash"), by the stem of each label in
 // every language, matched at the start of a word so endings ("რესტორანს", "автомойку") still match. Generic ones
-// ("other", "services") are left out: they say nothing about what the buyer wants.
+// ("other", "services") are left out: they say nothing about what the buyer wants. Accents are ignored on both sides,
+// so "cafe" finds "Café".
+const plain = (x: string) => x.normalize('NFD').replace(/\p{M}/gu, '')
 const stems: [string, string[]][] = Object.entries(categories)
   .filter(([key]) => key !== 'other' && key !== 'services')
   .map(([key, l]) => [
     key,
     [l.ka, l.en, l.ru]
       .flatMap((x) => x.toLowerCase().split(/\s*\/\s*/))
-      .map((x) => x.replace(/[აეიოუaeiouyаеиоуыяю]+$/u, ''))
+      .map((x) => plain(x.replace(/[აეიოუaeiouyаеиоуыяю]+$/u, '')))
       .filter((x) => x.length >= (/^[a-z]/.test(x) ? 4 : 3)), // "bar" would match "bargain"
   ])
 
 export function categoriesNamed(text: string): string[] {
-  const t = text.toLowerCase()
+  const t = plain(text.toLowerCase())
   return stems.filter(([, ss]) => ss.some((s) => new RegExp(`(?<!\\p{L})${s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`, 'u').test(t))).map(([key]) => key)
 }
 

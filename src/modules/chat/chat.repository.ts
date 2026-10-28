@@ -71,6 +71,13 @@ export const chatRepository = {
   },
 
 
+  // The user's most recently started chat (titled or not): the one in progress when it is open.
+  async newestForUser(userId: string): Promise<string | null> {
+    const { data, error } = await db.from('chat_sessions').select('id').eq('user_id', userId).order('created_at', { ascending: false }).limit(1)
+    if (error) throw error
+    return data[0] ? String(data[0].id) : null
+  },
+
   // The user's other conversations, newest first, for recalling what was said before (only on demand).
   async earlierForUser(userId: string, excludeId: string, limit = 5): Promise<EarlierChat[]> {
     const { data, error } = await db

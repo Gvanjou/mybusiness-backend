@@ -155,15 +155,18 @@ async function mapsReport(at: Located, businessType: string | null, forSpace: bo
 
 // The map around a place, worked into facts a consultant needs: direct and related competitors (named, with
 // distance), what else is there, how busy it looks and, for a space, which uses the area lacks or has too many of.
-async function mapFacts(at: Located, businessType: string | null, forSpace: boolean, area: number | null) {
+async function mapFacts(at: Located, businessType: string | null, forSpace: boolean, area: number | null, locale: Locale = 'en') {
   const cfg = businessType ? competitionConfig(businessType) : null
   const radius = Math.min(cfg?.radiusM ?? 500, 1_500)
   const map = await mapAround(at.lat, at.lon, Math.max(radius, 1_000))
   if (!map) return null
   const within = (m: number) => map.places.filter((p) => p.distanceM <= m)
-  const named = (p: MapPlace) => ({ name: p.name || p.nameEn || '(no name on the map)', type: p.sub || p.cls, distance_m: p.distanceM })
-  const near300 = within(300).filter((p) => !NOT_ACTIVITY.has(p.cls) && !NOT_ACTIVITY.has(`${p.cls}/${p.sub}`)).length
-  const near500 = within(500)
+  // Names in the reply's language when the map has them (Georgian answers never get "Friend's park").
+  const nameOf = (p: MapPlace) => (locale === 'ka' ? p.nameKa || (/[ა-ჰ]/.test(p.name) ? p.name : '') || p.name : locale === 'en' ? p.nameEn || p.name : p.name) || p.nameEn || '(no name on the map)'
+  const named = (p: MapPlace) => ({ name: nameOf(p), type: p.sub || p.cls, distance_m: p.distanceM })
+  const isActivity = (p: MapPlace) => !NOT_ACTIVITY.has(p.cls) && !NOT_ACTIVITY.has(`${p.cls}/${p.sub}`)
+  const near300 = within(300).filter(isActivity).length
+  const near500 = within(500).filter(isActivity)
   const count = (keys: string[], list: MapPlace[]) => list.filter((p) => matches(p, keys)).length
 
   const rivals = businessType ? COMPETITORS[businessType] : undefined
@@ -181,7 +184,12 @@ async function mapFacts(at: Located, businessType: string | null, forSpace: bool
     }
   }
 
-  const around = Object.fromEntries(Object.entries(AREA_GROUPS).map(([group, keys]) => [group, count(keys, near500)]))
+  // Each place in one group only (its first match), so the groups never add up to more than the total.
+  const around: Record<string, number> = Object.fromEntries(Object.keys(AREA_GROUPS).map((g) => [g, 0]))
+  for (const p of near500) {
+    const group = Object.entries(AREA_GROUPS).find(([, keys]) => matches(p, keys))?.[0]
+    if (group) around[group]! += 1
+  }
   const uses = forSpace
     ? SPACE_USES.map((u) => {
         const c = competitionConfig(u.category)
@@ -192,19 +200,18 @@ async function mapFacts(at: Located, businessType: string | null, forSpace: bool
     : null
   return {
     competition,
-    within_500m: { ...around, street_addresses: map.addresses },
+    within_500m: { all_places: near500.length, by_kind: around, street_addresses: map.addresses },
     footfall_signal: near300 >= 80 ? 'busy' : near300 >= 25 ? 'moderate' : 'quiet',
-    places_within_300m: near300,
     uses_for_this_space: uses,
     data_note: 'From OpenStreetMap, the map shown on the listing page. Small shops and new places can be missing, so counts are a minimum; names and distances are reliable.',
   }
 }
 
 // Competition around a listing in a few numbers, for comparisons: nothing when only the city is known.
-export async function competitionBrief(l: CatalogListing): Promise<Record<string, unknown> | null> {
+export async function competitionBrief(l: CatalogListing, locale: Locale = 'en'): Promise<Record<string, unknown> | null> {
   const at = await locateListing(l)
   if (!at || at.precision === 'city') return { note: 'only the city is known; competition around the exact address cannot be judged' }
-  const facts = await mapFacts(at, PROPERTY_LIKE.has(l.category) ? null : l.category, isCommercialSpace(l), l.area)
+  const facts = await mapFacts(at, PROPERTY_LIKE.has(l.category) ? null : l.category, isCommercialSpace(l), l.area, locale)
   if (!facts) return null
   const c = facts.competition as { radius_m?: number; direct_competitors?: unknown; level_by_count?: string; nearest_direct?: { name: string; distance_m: number }[] } | null
   return {
@@ -253,7 +260,7 @@ export async function analyzeArea(p: {
   if (at.precision === 'city') return { facts: base, sources: [] }
 
   // The map is fast and free; the Google Maps report adds ratings, reviews and busy hours when available.
-  const [map, google] = await Promise.all([mapFacts(at, businessType, forSpace, l?.area ?? null), mapsReport(at, businessType, forSpace, p.sessionId)])
+  const [map, google] = await Promise.all([mapFacts(at, businessType, forSpace, l?.area ?? null, p.locale), mapsReport(at, businessType, forSpace, p.sessionId)])
   return {
     facts: { ...base, map, google_maps_report: google?.text ?? null },
     sources: google?.sources.slice(0, 6) ?? [],

@@ -9,12 +9,15 @@ export function pick(text: Localized, locale: Locale): string {
   return text[locale] || text.en
 }
 
-const gelFormat: Record<Locale, Intl.NumberFormat> = {
-  ka: new Intl.NumberFormat('ka-GE', { maximumFractionDigits: 0 }),
-  en: new Intl.NumberFormat('en-US', { maximumFractionDigits: 0 }),
-  ru: new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 0 }),
+const grouped = new Intl.NumberFormat('en-US', { maximumFractionDigits: 0 })
+
+// Whole numbers as each language writes them: "60,000" in English, "60 000" in Georgian and Russian. Georgian
+// number data leaves four-digit numbers ungrouped ("2600"), so the grouping is done here, the same for every size.
+export function formatNumber(n: number, locale: Locale): string {
+  const s = grouped.format(Math.round(n))
+  return locale === 'en' ? s : s.replace(/,/g, '\u00a0')
 }
 
 export function formatGel(amount: number, locale: Locale): string {
-  return `${gelFormat[locale].format(Math.round(amount))} ₾`
+  return `${formatNumber(amount, locale)} ₾`
 }

@@ -5,7 +5,7 @@ import { env } from '../../pkg/env/env.js'
 export type AiTask = 'responder' | 'search' | 'transcribe' | 'embedding'
 
 // Defaults fit the free tier (Pro / Argon models have no free quota); a paid key can put Pro first via .env.
-// Each task lists models in preference order. The gateway tries healthy models first (see quota.order)
+// Each task lists models in preference order. The gateway reorders them by recent health and speed (see quota.order)
 // and moves to the next one on 429/5xx, timeouts or local quota.
 // GEMINI_RESPONDER_MODELS in .env replaces the chat chain (e.g. a paid Pro model first).
 // Every free Gemini model that answers with tools on this project (tested 2026-10-28), strongest first. Each has its

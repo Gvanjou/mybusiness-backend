@@ -7,9 +7,10 @@ const TTL_MS = 6 * 3_600_000
 
 const nbgSchema = z.array(z.object({ date: z.string(), currencies: z.array(z.object({ code: z.string(), rate: z.number().positive(), quantity: z.number().positive() })) }))
 
-// The API answers an empty list without a date, and sometimes for a day it has not published yet.
-async function ratesFor(day: Date): Promise<FxRates | null> {
-  const res = await fetch(`${NBG_URL}&date=${day.toISOString().slice(0, 10)}`, { signal: AbortSignal.timeout(5_000) })
+// Without a date the API gives its latest published rates; for a day it may answer an empty list (on 2026-10-28 it
+// did so for every recent day for hours, while the latest rates came back fine).
+async function ratesFor(day?: Date): Promise<FxRates | null> {
+  const res = await fetch(day ? `${NBG_URL}&date=${day.toISOString().slice(0, 10)}` : NBG_URL, { signal: AbortSignal.timeout(5_000) })
   if (!res.ok) throw new Error(`NBG API ${res.status}`)
   const [first] = nbgSchema.parse(await res.json())
   if (!first?.currencies.length) return null
@@ -20,26 +21,32 @@ async function ratesFor(day: Date): Promise<FxRates | null> {
 
 export type FxRates = Record<string, number> // GEL per 1 unit
 
-// Used only while the National Bank cannot be reached.
+// Used only until the National Bank answers once. Then the last rates it gave are kept, also past their few hours,
+// whenever it does not answer: a price must not jump between 51 920 ₾ and 52 000 ₾ in one chat because the rate
+// switched to this fallback and back (round 6).
 const FALLBACK: FxRates = { GEL: 1, USD: 2.6, EUR: 2.9 }
+// Without any NBG answer yet, the fallback is kept for a while instead of asking NBG on every listing refresh.
+const RETRY_MS = 15 * 60_000
 
-let cached: { at: number; rates: FxRates } | null = null
+let cached: { at: number; rates: FxRates; fromNbg: boolean } | null = null
 
 export const fxService = {
   async latest(): Promise<FxRates> {
-    if (cached && Date.now() - cached.at < TTL_MS) return cached.rates
+    if (cached && Date.now() - cached.at < (cached.fromNbg ? TTL_MS : RETRY_MS)) return cached.rates
     try {
-      for (let back = 0; back < 4; back++) {
-        const rates = await ratesFor(new Date(Date.now() - back * 86_400_000))
+      for (const day of [undefined, ...[0, 1, 2, 3].map((back) => new Date(Date.now() - back * 86_400_000))]) {
+        const rates = await ratesFor(day)
         if (rates) {
-          cached = { at: Date.now(), rates }
+          cached = { at: Date.now(), rates, fromNbg: true }
           return rates
         }
       }
       throw new Error('NBG published no rates for the last days')
     } catch (err) {
-      logger.warn('NBG rates unavailable; using fallback', errorFields(err))
-      return cached?.rates ?? { ...FALLBACK }
+      logger.warn(cached?.fromNbg ? 'NBG rates unavailable; keeping the last ones' : 'NBG rates unavailable; using fallback', errorFields(err))
+      // The last NBG rates stay in use (their age is reset, so NBG is asked again later, not on every refresh).
+      cached = { at: Date.now(), rates: cached?.rates ?? { ...FALLBACK }, fromNbg: cached?.fromNbg ?? false }
+      return cached.rates
     }
   },
 }

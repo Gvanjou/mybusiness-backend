@@ -69,7 +69,7 @@ test('a business type named in a message is recognised in any language and with 
   const { categoriesNamed } = await import('../src/modules/catalog/catalog.labels.js')
   assert.deepEqual(categoriesNamed('გამარჯობა, 5000 ლარი მაქვს და რესტორანი მინდა ვიყიდო თბილისში'), ['restaurants'])
   assert.deepEqual(categoriesNamed('Хочу купить автомойку в Тбилиси'), ['car_wash'])
-  assert.deepEqual(categoriesNamed('კაფე მინდა ბათუმში 30 ათასამდე'), ['bakery'])
+  assert.deepEqual(categoriesNamed('კაფე მინდა ბათუმში 30 ათასამდე'), ['restaurants'], 'a café is a café / restaurant, as in the form')
   assert.deepEqual(categoriesNamed('a good bargain, other services'), [])
   assert.deepEqual(categoriesNamed('მინდა ბიზნესში ფულის ჩადება'), [])
 })
@@ -90,4 +90,14 @@ test('figures as sellers write them: per day, ranges, "აშშ", yearly — al
   assert.equal(yearly.financials.revenue_monthly?.min, 58333)
   assert.equal(read('ობიექტი ამჟამად დახურულია, ადრე მოქმედი კაფე იყო').isOperating, false, 'closed beats an old "operating"')
   assert.equal(read('მოქმედი კაფე დახურული ტერასით').isOperating, true, 'a covered terrace is not a closed business')
+})
+
+test('a reason for sale written as "because" after the closure is read, up to the first comma', () => {
+  const texts = [
+    'იყიდება კაფე, ისანში, სრულად აღჭურვილია ავეჯით და ტექნიკით, კაფე ამჟამად არ ფუნქიონირებს რადგან მეპატრონეს საზღვარგარეთ მოუწია წასვლა, ფართი იჯარით არის აღებული, 2700$ არის ყოველთვიური იჯარა, დამიკავშირდით: 511 15 38 19',
+    'Cafe for sale in Isani. The cafe is currently not operating because the owner had to go abroad. The monthly rent is $2700.',
+  ]
+  const i = textInsights({ category: 'restaurants', dealType: 'sale', texts, site, hasLocation: true, priceKnown: true })
+  assert.equal(i.reasonForSale, 'მეპატრონეს საზღვარგარეთ მოუწია წასვლა')
+  assert.equal(i.isOperating, false)
 })
