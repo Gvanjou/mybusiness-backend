@@ -70,18 +70,18 @@ export const toolDeclarations: FunctionDeclaration[] = [
   {
     name: 'get_listing',
     description: 'One listing as the site shows it now: the seller\'s full description, figures, address and our analysis (price vs similar listings, risks, what is missing). ref = listing id, URL, or "#2" for the 2nd listing on screen. Shows its card.',
-    parameters: { type: Type.OBJECT, properties: { ref: str('Listing id, mybusiness.ge URL, or #N') }, required: ['ref'] },
+    parameters: { type: Type.OBJECT, properties: { ref: str('Listing id, mybusiness.ge URL, #N, or its title as the client wrote it') }, required: ['ref'] },
   },
   {
     name: 'analyze_listing',
     description:
       'Deeper analysis of one listing for one question: price (vs market, per m², payback), risks, missing (information gaps), seller_questions (what to ask, with a draft message), similar (comparable listings, shown as cards). For location and competition use location_analysis.',
-    parameters: { type: Type.OBJECT, properties: { ref: str('Listing id, URL or #N'), aspect: str('What to analyse', ASPECTS) }, required: ['ref', 'aspect'] },
+    parameters: { type: Type.OBJECT, properties: { ref: str('Listing id, URL, #N or its title'), aspect: str('What to analyse', ASPECTS) }, required: ['ref', 'aspect'] },
   },
   {
     name: 'compare_listings',
     description: 'Side-by-side comparison of 2–3 listings (price, size, financials, fit). Shows a comparison table.',
-    parameters: { type: Type.OBJECT, properties: { refs: list(str('Listing id, URL or #N'), '2 to 3 listings') }, required: ['refs'] },
+    parameters: { type: Type.OBJECT, properties: { refs: list(str('Listing id, URL, #N or its title'), '2 to 3 listings') }, required: ['refs'] },
   },
   {
     name: 'market_stats',
@@ -98,7 +98,7 @@ export const toolDeclarations: FunctionDeclaration[] = [
     parameters: {
       type: Type.OBJECT,
       properties: {
-        ref: str('Listing id, URL or #N (omit when judging an address)'),
+        ref: str('Listing id, URL, #N or its title (omit when judging an address)'),
         address: str('A street address or place, when there is no listing'),
         city: str('City in English, for an address'),
         business_type: str('Category key of the business to judge here (default: the listing\'s own; for a space, the use the client has in mind)', knownCategoryKeys),
@@ -199,7 +199,17 @@ function resolveRef(ctx: ToolContext, ref: string): CatalogListing | undefined {
     const id = ctx.state.lastShown[Number(pos[1]) - 1]
     return id ? ctx.s.byId.get(id) : undefined
   }
-  return catalog.resolve(ctx.s, ref) ?? (ctx.state.contextListingId && /this|current|focus/i.test(ref) ? ctx.s.byId.get(ctx.state.contextListingId) : undefined)
+  return catalog.resolve(ctx.s, ref) ?? byTitle(ctx, ref) ?? (ctx.state.contextListingId && /this|current|focus/i.test(ref) ? ctx.s.byId.get(ctx.state.contextListingId) : undefined)
+}
+
+// A listing named by its title ("„იყიდება ლუდის მაღაზია“"), among those shown in this conversation first.
+function byTitle(ctx: ToolContext, ref: string): CatalogListing | undefined {
+  const name = ref.replace(/[„“"«»'”]/g, '').trim().toLowerCase()
+  if (name.length < 4) return undefined
+  const seen = [...ctx.state.lastShown, ...ctx.state.cardsShown, ctx.state.contextListingId].filter((x): x is string => Boolean(x))
+  const pool = [...seen.map((id) => ctx.s.byId.get(id)).filter((l): l is CatalogListing => Boolean(l)), ...ctx.s.listings]
+  const titles = (l: CatalogListing) => [l.title.ka, l.title.en, l.title.ru].filter(Boolean).map((t) => t!.toLowerCase())
+  return pool.find((l) => titles(l).some((t) => t === name)) ?? pool.find((l) => titles(l).some((t) => t.includes(name) || name.includes(t)))
 }
 
 // The listing as the site shows it right now; a removed one says so.

@@ -34,7 +34,7 @@ test('two listings shown: compare first, then location and risks of the first on
   assert.ok(chips.every((c) => c.icon), 'every next step carries an icon')
   const location = chips[1]!
   assert.equal(location.kind, 'message')
-  assert.match(location.kind === 'message' ? location.text : '', /«კაფე ვაკეში» \[aaaaaaaa\]/, 'the message names the listing so the model can resolve it')
+  assert.match(location.kind === 'message' ? location.text : '', /„კაფე ვაკეში“/, 'the message names the listing by its title')
 })
 
 test('listing in focus: aspects already analysed are not offered again', () => {
@@ -68,4 +68,11 @@ test('the chip just tapped is not offered again, and model chips come first, at 
   const merged = mergeChips(model, next)
   assert.equal(merged.length, 5)
   assert.ok(merged.slice(0, 3).every((c) => c.id.startsWith('ai:')))
+})
+
+test('chips name the listing by its title in quotes, without an id', () => {
+  const chips = nextSteps(ctx({ lastShown: [a.id] }), ['search_listings'], null)
+  const risks = chips.find((c) => c.id === 'next:risks')!
+  assert.equal(risks.kind === 'message' && risks.text, 'შეაფასე რისკები: „კაფე ვაკეში“')
+  assert.ok(chips.every((c) => c.kind !== 'message' || !/\[[0-9a-f]{8}\]/.test(c.text)))
 })

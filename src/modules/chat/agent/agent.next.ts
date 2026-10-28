@@ -39,6 +39,10 @@ const ASPECT: Partial<Record<NextKey, string>> = { risks: 'risks', location: 'co
 
 export type Offered = { key: string; text: string }
 
+// A listing named the way people write it: „სათაური“ / "Title" / «Название». The model finds it among the
+// listings on screen by its title.
+const quoted = (title: string, locale: string) => (locale === 'ka' ? `„${title}“` : locale === 'ru' ? `«${title}»` : `"${title}"`)
+
 export function nextSteps(ctx: ToolContext, calledTools: string[], justClicked: string | null): QuickReply[] {
   const { state, profile, locale } = ctx
   const called = new Set(calledTools)
@@ -75,7 +79,7 @@ export function nextSteps(ctx: ToolContext, calledTools: string[], justClicked: 
     if (['location', 'risks', 'price', 'calc', 'seller', 'similar'].includes(key) && !(focus || first)) continue
     const target = (called.has('search_listings') ? first : focus) ?? first
     const vars = {
-      ref: target ? `«${pick(target.title, locale)}» [${target.shortId}]` : '',
+      ref: target ? quoted(pick(target.title, locale), locale) : '',
       city: city ? inCity(cityLabel(city, locale), locale) : '',
       sector: sector ? categoryLabel(sector, locale) : '',
     }

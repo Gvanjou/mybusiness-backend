@@ -17,6 +17,7 @@ import { entryQuickReplies, profileItems, texts } from '../templates/templates.j
 import { collectNumbers, validateReply } from '../validator/validator.service.js'
 import { agentSystem } from './agent.prompt.js'
 import { applyFormAnswers, profileFacts, runTool, terminalTools, toolDeclarations, type ToolContext, type ToolOutput } from './agent.tools.js'
+import { defaultIntakeForm, promisesForm, promisesListings } from './agent.fallback.js'
 import { clickedKey, mergeChips, nextSteps, offeredFrom } from './agent.next.js'
 import { createTextFilter } from './agent.text.js'
 
@@ -209,6 +210,20 @@ export async function agentTurn(params: { session: Session; input: SendMessage; 
       const note = `${reply ? '\n\n' : ''}${pick(texts.cutOff, locale)}`
       reply += note
       await emit('token', { text: note })
+    }
+  }
+
+  // What the reply promised is on screen, whatever the model did: a form it announced but never delivered (or got
+  // wrong) is built here from what the profile still lacks; listings it announced without searching are searched.
+  if (!signal.aborted && !stop.signal.aborted && reply.trim()) {
+    if (!out.form && promisesForm(reply)) {
+      out.form = defaultIntakeForm(ctx.profile, locale, ctx.s)
+      if (out.form) logger.info('form promised but not delivered; the app built it', { session: session.id })
+    } else if (!out.form && !out.cards.length && !calledTools.includes('search_listings') && promisesListings(reply) && announcesAction(reply)) {
+      logger.info('listings promised but not searched; the app searched', { session: session.id })
+      calledTools.push('search_listings')
+      toolResults.push(await runTool('search_listings', {}, ctx).catch(() => null))
+      profile = ctx.profile
     }
   }
 

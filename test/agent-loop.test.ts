@@ -184,3 +184,27 @@ test('a form the model announced but got wrong does not end the turn: the model 
   assert.equal(form.questions[0]?.field, 'budget')
   assert.equal(form.questions[0]?.options[0]?.value, '50 000 ₾-მდე', 'an option with only a label gets it as its value too')
 })
+
+test('the screenshot case: "შეავსოთ მოკლე კითხვარი" with no form at all → the app shows the form itself', async () => {
+  script = async function* () {
+    const text = 'საუკეთესო მიდგომაა. იმისათვის, რომ შევძლოთ თქვენთვის ყველაზე შესაფერისი ბიზნესების შერჩევა, გთხოვთ შეავსოთ მოკლე კითხვარი:'
+    yield { type: 'text', text }
+    yield { type: 'done', model: 'stub', parts: [{ text }], calls: [] }
+  }
+  const r = await run('ზუსტად არა რა ტიპებია მომე და ავირჩევ')
+  const form = r.of('form')[0] as { questions: { field: string; options: unknown[] }[] } | undefined
+  assert.ok(form, 'a form is on screen')
+  assert.deepEqual(form.questions.map((q) => q.field).slice(0, 3), ['budget', 'goal', 'involvement'])
+  assert.ok(form.questions.every((q) => q.options.length >= 2))
+  assert.equal(r.events.at(-1)?.event, 'done')
+})
+
+test('"let\'s see the options" with no search → the app searches and shows listings', async () => {
+  script = async function* () {
+    const text = 'კარგი, მოდით, ვნახოთ, რა ვარიანტებია თბილისში.'
+    yield { type: 'text', text }
+    yield { type: 'done', model: 'stub', parts: [{ text }], calls: [] }
+  }
+  const r = await run('მაჩვენე')
+  assert.ok(r.of('listings').length === 1, 'listing cards are on screen')
+})
