@@ -45,7 +45,8 @@ function resetTime(offset: 0 | -1): Date {
   return toMinute(hi)
 }
 
-const toMinute = (ms: number) => new Date(Math.round(ms / 60_000) * 60_000)
+// The search ends within a minute after the change of day: rounding down gives the exact minute (11:00, not 11:01).
+const toMinute = (ms: number) => new Date(Math.floor(ms / 60_000) * 60_000)
 
 function get(model: string): ModelState {
   let s = state.get(model)
@@ -111,7 +112,9 @@ export const quota = {
     for (;;) {
       const s = get(model)
       const now = Date.now()
-      if (s.coolingUntil > now || s.day >= Math.floor(limit.rpd * share)) return false
+      // The daily allowance is judged by answered requests and by Google's own "used up" reply, not by attempts:
+      // a model that was busy (503) many times today has not spent its allowance.
+      if (s.coolingUntil > now || s.exhausted || s.ok >= Math.floor(limit.rpd * share)) return false
       s.minute = s.minute.filter((t) => now - t < 60_000)
       if (s.minute.length < limit.rpm) {
         s.minute.push(now)
@@ -130,7 +133,8 @@ export const quota = {
   },
 
   // Circuit breaker for slow or overloaded models (503, timeouts). They stay usable, just tried last.
-  markUnhealthy(model: string, ms = 3 * 60_000): void {
+  // Free-tier overloads last a while: 10 minutes at the back of the line spares the next chats the wait.
+  markUnhealthy(model: string, ms = 10 * 60_000): void {
     get(model).unhealthyUntil = Date.now() + ms
   },
 

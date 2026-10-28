@@ -21,7 +21,8 @@ type CallMeta = { sessionId?: string; maxWaitMs?: number; userSignal?: AbortSign
 
 // Per-call limits: a model slower than this is skipped in favour of the next one in the chain.
 // For the responder it is the time to the FIRST streamed chunk.
-const callTimeoutMs: Record<AiTask, number> = { responder: 12_000, search: 25_000, transcribe: 25_000, embedding: 15_000 }
+// A healthy Flash model starts answering within 2–5 s; one that has not after 8 s is overloaded and the next one is faster.
+const callTimeoutMs: Record<AiTask, number> = { responder: 8_000, search: 25_000, transcribe: 25_000, embedding: 15_000 }
 const STREAM_TOTAL_TIMEOUT_MS = 90_000
 // Once a stream has started, only silence ends it: a model still sending text or a tool call is never cut.
 const STREAM_IDLE_TIMEOUT_MS = 15_000
@@ -83,7 +84,8 @@ function isOverloaded(err: unknown): boolean {
 async function withFallback<T>(task: AiTask, meta: CallMeta, call: (model: string) => Promise<T>): Promise<T> {
   const chain = modelChains[task]
   const maxWaitMs = meta.maxWaitMs ?? 3_000
-  const overloadRetries = meta.sessionId ? 1 : 3
+  // Someone is waiting in the chat: a busy model is not retried, the next one is tried at once. Jobs can wait.
+  const overloadRetries = meta.sessionId ? 0 : 3
   const ordered = quota.order(chain)
   const models = meta.prefer && ordered.includes(meta.prefer) ? [meta.prefer, ...ordered.filter((m) => m !== meta.prefer)] : ordered
   for (const model of models) {

@@ -42,19 +42,21 @@ export const thinkingByTask: Record<Exclude<AiTask, 'embedding'>, ThinkingLevel>
 
 export type ModelLimit = { rpm: number; rpd: number }
 
-// Free-tier defaults. Measured on 2026-10-27: gemini-3.8-flash, 3.7-flash, 3.6-flash and 3.5-flash allow 20 requests/day;
-// Pro and Argon models have no free quota (limit 0), gemini-2.5-* are retired
-// (quota GenerateRequestsPerDayPerProjectPerModel-FreeTier). Limits are per Google Cloud project and change:
-// check https://aistudio.google.com/rate-limit and raise them with GEMINI_MODEL_LIMITS if yours are higher.
+// Free-tier limits as Google AI Studio shows them for this project (Rate limit page, 2026-10-28): the Flash models
+// allow 5 requests a minute and 20 a day, the Flash-Lite models 15 a minute and 500 a day. Pro, Omni and Argon have
+// no free quota. Limits are per Google Cloud project and change: check https://aistudio.google.com/rate-limit and
+// override with GEMINI_MODEL_LIMITS if yours differ.
+const flash: ModelLimit = { rpm: 5, rpd: 20 }
+const lite: ModelLimit = { rpm: 15, rpd: 500 }
 const defaultLimits: Record<string, ModelLimit> = {
-  'gemini-3.5-flash-lite': { rpm: 10, rpd: 20 },
-  'gemini-3.1-flash-lite': { rpm: 10, rpd: 20 },
-  'gemini-3.1-flash-lite-preview': { rpm: 10, rpd: 20 },
-  'gemini-3.8-flash': { rpm: 5, rpd: 20 },
-  'gemini-3.7-flash': { rpm: 5, rpd: 20 },
-  'gemini-3.5-flash': { rpm: 5, rpd: 20 },
-  'gemini-3.6-flash': { rpm: 5, rpd: 20 },
-  'gemini-3-flash-preview': { rpm: 5, rpd: 20 },
+  'gemini-3.8-flash': flash,
+  'gemini-3.7-flash': flash,
+  'gemini-3.6-flash': flash,
+  'gemini-3.5-flash': flash,
+  'gemini-3-flash-preview': flash,
+  'gemini-3.5-flash-lite': lite,
+  'gemini-3.1-flash-lite': lite,
+  'gemini-3.1-flash-lite-preview': lite,
   'gemini-embedding-2': { rpm: 100, rpd: 1000 },
 }
 

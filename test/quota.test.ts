@@ -23,3 +23,23 @@ test('the chat tries 3.8 Flash first and falls back through every free model', (
   assert.equal(modelChains.responder[0], 'gemini-3.8-flash')
   assert.deepEqual([...modelChains.responder], [...FREE_CHAT_MODELS])
 })
+
+test('busy attempts do not use up a model; Google saying "used up" does', async () => {
+  // Flash-Lite allows 15 a minute: 25 attempts spread as if over time must not block it for the day.
+  const model = 'gemini-3.5-flash-lite'
+  for (let i = 0; i < 25; i++) {
+    assert.equal(await quota.acquire(model, 0), i < 15, `attempt ${i + 1}: only the per-minute limit applies`)
+  }
+  const fresh = 'gemini-3.1-flash-lite'
+  assert.equal(await quota.acquire(fresh, 0), true)
+  quota.markExhausted(fresh)
+  assert.equal(await quota.acquire(fresh, 0), false, 'used up until the reset')
+})
+
+test('the free total reflects the real limits: 5 Flash models × 20 and 3 Flash-Lite × 500 a day', () => {
+  const { total } = quota.usage([...FREE_CHAT_MODELS])
+  assert.equal(total, 5 * 20 + 3 * 500)
+  const reset = new Date(quota.usage([...FREE_CHAT_MODELS]).resetsAt)
+  assert.equal(reset.getUTCSeconds(), 0)
+  assert.equal(reset.getUTCMinutes(), 0, 'renews on the hour, not a minute after')
+})
