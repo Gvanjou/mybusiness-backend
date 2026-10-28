@@ -12,7 +12,7 @@
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit",
     "job": "tsx --env-file=.env src/jobs/jobs.cli.ts",
-    "test": "tsx --env-file=.env --test test/auth.test.ts test/agent-next.test.ts test/guard.test.ts test/catalog-text.test.ts test/agent-tools.test.ts test/agent-loop.test.ts test/agent-text.test.ts"
+    "test": "tsx --env-file=.env --test test/auth.test.ts test/quota.test.ts test/agent-next.test.ts test/guard.test.ts test/catalog-text.test.ts test/agent-tools.test.ts test/agent-loop.test.ts test/agent-text.test.ts"
   },
   "dependencies": {
     "@google/genai": "^2.31.0",

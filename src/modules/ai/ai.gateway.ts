@@ -93,10 +93,15 @@ async function withFallback<T>(task: AiTask, meta: CallMeta, call: (model: strin
       try {
         const result = await call(model)
         quota.markHealthy(model)
+        quota.recordOk(model)
         return result
       } catch (err) {
         const status = err instanceof ApiError ? err.status : undefined
-        if (status === 429) quota.coolDown(model)
+        // A daily limit ("retry in 21h…", "per day") is out until the reset; a per-minute one cools down briefly.
+        if (status === 429) {
+          if (/per ?day|PerDay|retry in \d+h/i.test(err instanceof Error ? err.message : String(err))) quota.markExhausted(model)
+          else quota.coolDown(model)
+        }
         logUsage(task, model, status === 429 ? 'rate_limited' : 'error', started, meta)
         logger.warn('gemini call failed', { task, model, status, attempt, ...errorFields(err) })
         if (meta.userSignal?.aborted) throw err // the user left; don't try other models

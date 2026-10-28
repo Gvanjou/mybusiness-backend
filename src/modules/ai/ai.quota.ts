@@ -5,7 +5,9 @@ import { limitFor } from './ai.models.js'
 
 type ModelState = {
   minute: number[] // request timestamps within the last 60 s
-  day: number
+  day: number // attempts today (our own throttle)
+  ok: number // answered requests today: what Google counts against the daily allowance
+  exhausted: boolean // Google said today's allowance is used up (429 per day)
   dayKey: string
   coolingUntil: number
   unhealthyUntil: number // recent timeout/overload: try other models first
@@ -18,15 +20,44 @@ function pacificDayKey(now = new Date()): string {
   return new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Los_Angeles' }).format(now)
 }
 
+// Midnight Pacific: offset 0 = the next reset, -1 = the last one. Found by stepping over the date change, which
+// handles daylight saving without a time-zone library.
+function resetTime(offset: 0 | -1): Date {
+  const now = Date.now()
+  const today = pacificDayKey(new Date(now))
+  let lo = now
+  let hi = now + 26 * 3_600_000
+  if (offset === -1) {
+    lo = now - 26 * 3_600_000
+    hi = now
+    while (hi - lo > 60_000) {
+      const mid = (lo + hi) / 2
+      if (pacificDayKey(new Date(mid)) === today) hi = mid
+      else lo = mid
+    }
+    return toMinute(hi)
+  }
+  while (hi - lo > 60_000) {
+    const mid = (lo + hi) / 2
+    if (pacificDayKey(new Date(mid)) === today) lo = mid
+    else hi = mid
+  }
+  return toMinute(hi)
+}
+
+const toMinute = (ms: number) => new Date(Math.round(ms / 60_000) * 60_000)
+
 function get(model: string): ModelState {
   let s = state.get(model)
   const key = pacificDayKey()
   if (!s) {
-    s = { minute: [], day: 0, dayKey: key, coolingUntil: 0, unhealthyUntil: 0 }
+    s = { minute: [], day: 0, ok: 0, exhausted: false, dayKey: key, coolingUntil: 0, unhealthyUntil: 0 }
     state.set(model, s)
   }
   if (s.dayKey !== key) {
     s.day = 0
+    s.ok = 0
+    s.exhausted = false
     s.dayKey = key
   }
   return s
@@ -41,6 +72,34 @@ export const quota = {
       return
     }
     for (const row of (data ?? []) as { model: string; requests: number }[]) get(row.model).day = Number(row.requests)
+    // Answered requests since the reset, for the shared usage figure.
+    const { data: ok, error: okError } = await db.from('llm_usage').select('model').eq('outcome', 'ok').gte('created_at', resetTime(-1).toISOString())
+    if (okError) logger.warn('quota.load: answered requests unavailable', errorFields(okError))
+    for (const row of ok ?? []) get(String(row.model)).ok++
+  },
+
+  recordOk(model: string): void {
+    get(model).ok++
+  },
+
+  // Google refused for the rest of the day: no more tries until the reset, and the model counts as fully used.
+  markExhausted(model: string): void {
+    const s = get(model)
+    s.exhausted = true
+    s.coolingUntil = resetTime(0).getTime()
+  },
+
+  // Today's use of the free allowance across these models: answered requests (a used-up model counts in full).
+  usage(models: string[]): { used: number; total: number; resetsAt: string } {
+    let used = 0
+    let total = 0
+    for (const m of models) {
+      const { rpd } = limitFor(m)
+      const s = get(m)
+      total += rpd
+      used += s.exhausted ? rpd : Math.min(s.ok, rpd)
+    }
+    return { used, total, resetsAt: resetTime(0).toISOString() }
   },
 
   // Reserves a request slot. Waits up to maxWaitMs for the per-minute window;

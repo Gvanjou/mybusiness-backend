@@ -67,12 +67,6 @@ export const chatRepository = {
     return data.map((r) => ({ id: String(r.id), title: r.title, updatedAt: r.updated_at }))
   },
 
-  // AI tokens this user's conversations used today (Tbilisi day).
-  async tokensToday(userId: string): Promise<number> {
-    const { data, error } = await db.rpc('user_tokens_today', { uid: userId })
-    if (error) throw error
-    return Number(data ?? 0)
-  },
 
   async saveSession(s: Session): Promise<void> {
     const { error } = await db

@@ -3,6 +3,8 @@ import { formatGel, pick, type Locale } from '../../../shared/i18n/locale.js'
 import { logger, errorFields } from '../../../shared/logger/logger.js'
 import { AppError } from '../../../shared/http/app-error.js'
 import { ai } from '../../ai/ai.gateway.js'
+import { chatModels } from '../../ai/ai.models.js'
+import { quota } from '../../ai/ai.quota.js'
 import { categoryLabel } from '../../catalog/catalog.labels.js'
 import { catalog } from '../../catalog/catalog.service.js'
 import type { Emit, SendMessage } from '../chat.model.js'
@@ -291,6 +293,8 @@ function titleFrom(text: string): string {
 // No answer this time: keep what the user told us and let the UI offer a retry.
 async function unavailable(session: Session, profile: Session['profile'], state: Session['state'], locale: Locale): Promise<never> {
   await chatRepository.saveSession({ ...session, locale, profile, state })
+  const { used, total } = quota.usage(chatModels())
+  if (total && used >= total) throw new AppError('daily_limit', 'Today’s free AI allowance is used up. It renews when Google resets the daily limits.')
   throw new AppError('ai_unavailable', 'The AI could not answer right now. Please try again.', 30)
 }
 

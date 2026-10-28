@@ -56,8 +56,6 @@ const envSchema = z.object({
     .transform((v) => v === 'true'),
   CHAT_MESSAGES_PER_MINUTE: z.coerce.number().int().positive().default(10),
   CHAT_MESSAGES_PER_DAY: z.coerce.number().int().positive().default(200),
-  // AI tokens one person may use per day (all their chats). The usage circle shows the share used.
-  USER_DAILY_TOKENS: z.coerce.number().int().positive().default(400_000),
   SESSIONS_PER_HOUR: z.coerce.number().int().positive().default(20),
 
   SOURCE_BASE_URL: z.url().default('https://mybusiness.ge'),

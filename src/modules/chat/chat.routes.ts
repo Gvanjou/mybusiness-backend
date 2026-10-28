@@ -8,6 +8,8 @@ import { RateLimiter } from '../../shared/http/rate-limit.js'
 import { pick } from '../../shared/i18n/locale.js'
 import { logger, errorFields } from '../../shared/logger/logger.js'
 import { AiUnavailableError } from '../ai/ai.gateway.js'
+import { chatModels } from '../ai/ai.models.js'
+import { quota } from '../ai/ai.quota.js'
 import { requireUser, type User } from '../auth/auth.service.js'
 import { clearOpenConversation, openConversationId, setOpenConversation } from './chat.cookie.js'
 import { z } from 'zod'
@@ -43,11 +45,11 @@ async function requireConversation(c: Context): Promise<{ user: User; session: S
   return { user, session }
 }
 
-// How much of today's AI allowance the user has used. Only the used share is shown; what is left depends on
-// Google's quota too, which we cannot see.
-async function usage(userId: string) {
-  const tokens = await chatRepository.tokensToday(userId)
-  return { tokensToday: tokens, usedPct: Math.min(100, Math.round((tokens / env.USER_DAILY_TOKENS) * 100)) }
+// Today's use of the free Gemini allowance, shared by everyone: answered requests out of the daily total of all the
+// models the chat uses. Everyone sees the same figure; at 100% the chat waits for Google's reset.
+function usage() {
+  const { used, total, resetsAt } = quota.usage(chatModels())
+  return { requestsUsed: used, requestsTotal: total, usedPct: total ? Math.min(100, Math.round((used / total) * 100)) : 0, resetsAt }
 }
 
 async function json<T>(c: Context, parse: (v: unknown) => T): Promise<T> {
@@ -67,7 +69,10 @@ async function json<T>(c: Context, parse: (v: unknown) => T): Promise<T> {
 // /api/assistant: the chat. Sign-in is required; conversations belong to the user and stay in the history.
 export const chatRoutes = new Hono()
   .use(sameOrigin)
-  .get('/usage', async (c) => c.json(await usage((await requireUser(c)).id)))
+  .get('/usage', async (c) => {
+    await requireUser(c)
+    return c.json(usage())
+  })
 
   // Chat history.
   .get('/conversations', async (c) => {
@@ -159,7 +164,7 @@ export const chatRoutes = new Hono()
     const input = await json(c, (b) => sendMessageSchema.parse(b))
     messagesPerSession.hit(session.id)
     messagesPerUser.hit(user.id)
-    if ((await usage(user.id)).usedPct >= 100) throw new AppError('daily_limit', 'You have used today’s AI allowance. It renews at midnight (Tbilisi time).')
+    if (usage().usedPct >= 100) throw new AppError('daily_limit', 'Today’s free AI allowance is used up. It renews when Google resets the daily limits.')
     if (inFlight.has(session.id)) throw new AppError('rate_limited', 'Please wait for the current answer to finish.', 2)
     inFlight.add(session.id)
 
