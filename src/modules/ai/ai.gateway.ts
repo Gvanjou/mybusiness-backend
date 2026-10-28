@@ -19,8 +19,9 @@ type Outcome = 'ok' | 'rate_limited' | 'error' | 'fallback'
 // prefer: try this model first (an agent's later steps must stay on the model that started the answer).
 // only: the client picked this model: use it and nothing else, so a busy or used-up model is reported, not hidden.
 // chain: this call's own model order (e.g. light models first for a quick question).
-// attempts: requests this user turn may still send to Google, shared by all its steps. Every request that reaches
-// Google counts against the daily allowance, even one we stopped waiting for, so a turn never walks the whole chain.
+// attempts: slow failed requests this user turn may still afford, shared by all its steps. A failed request that reached
+// Google can still count against the daily allowance, so a turn never walks the whole chain. Answers don't count:
+// a turn that looks something up and then writes needs two good requests.
 type CallMeta = { sessionId?: string; maxWaitMs?: number; userSignal?: AbortSignal; prefer?: string; only?: string; chain?: readonly string[]; attempts?: { left: number } }
 
 // Per-call limits: a model slower than this is skipped in favour of the next one in the chain.
@@ -102,7 +103,6 @@ async function withFallback<T>(task: AiTask, meta: CallMeta, call: (model: strin
     if (meta.attempts && meta.attempts.left <= 0) break
     if (!(await quota.acquire(model, maxWaitMs, meta.sessionId ? 1 : JOB_QUOTA_SHARE))) continue
     for (let attempt = 0; ; attempt++) {
-      if (meta.attempts) meta.attempts.left--
       const started = Date.now()
       try {
         const result = await call(model)
@@ -117,6 +117,9 @@ async function withFallback<T>(task: AiTask, meta: CallMeta, call: (model: strin
           else quota.coolDown(model)
         }
         logUsage(task, model, status === 429 ? 'rate_limited' : 'error', started, meta)
+        // A quick refusal ("limit reached" in 0.3 s, "high demand" in 1 s) did no work and costs nothing; a slow
+        // failure may have been processed and counted.
+        if (meta.attempts && Date.now() - started > 5_000) meta.attempts.left--
         logger.warn('gemini call failed', { task, model, status, attempt, ...errorFields(err) })
         if (meta.userSignal?.aborted) throw err // the user left; don't try other models
         if (!isRetryable(err)) throw err

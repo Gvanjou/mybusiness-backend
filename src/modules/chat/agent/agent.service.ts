@@ -32,7 +32,7 @@ const MAX_STEPS = 3
 const HISTORY = 8
 // The whole turn, including tool calls. Past this the user has waited long enough.
 const TURN_BUDGET_MS = 55_000
-// Requests one message may send to Google across all its steps and fallbacks (see CallMeta.attempts).
+// Slow failed requests one message may afford across all its steps and fallbacks (see CallMeta.attempts).
 const MAX_ATTEMPTS = 4
 
 const showResultsText = { ka: 'მაჩვენე ვარიანტები', en: 'Show me options', ru: 'Покажи варианты' }
