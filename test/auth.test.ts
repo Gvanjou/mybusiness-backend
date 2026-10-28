@@ -52,3 +52,13 @@ test('changes from another website are blocked', async () => {
   const res = await app.request('/api/assistant/session', { method: 'POST', headers: { ...site, origin: 'https://evil.example', 'content-type': 'application/json' }, body: '{"locale":"ka"}' })
   assert.equal(res.status, 403)
 })
+
+test('the profile photo is served from our address, only from Google\'s photo host', async () => {
+  const { avatarImage, avatarPath } = await import('../src/modules/auth/auth.service.js')
+  assert.equal(await avatarImage('https://evil.example/me.png'), null)
+  assert.equal(await avatarImage('not a url'), null)
+  assert.match(avatarPath('https://lh3.googleusercontent.com/a/abc=s96-c')!, /^\/api\/auth\/avatar\?v=[0-9a-f]{10}$/)
+  assert.equal(avatarPath(null), null)
+  const res = await app.request('/api/auth/avatar', { headers: site })
+  assert.equal(res.status, 401, 'signed out')
+})

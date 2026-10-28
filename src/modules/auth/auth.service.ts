@@ -129,6 +129,34 @@ export async function signOut(c: Context): Promise<void> {
   deleteCookie(c, SESSION, { path: '/' })
 }
 
+// The Google profile photo, fetched here and served from our own address: the site only loads images from
+// itself (Content-Security-Policy), and Google's image host refuses some cross-site requests. Cached in memory.
+const AVATAR_TTL_MS = 24 * 3_600_000
+const avatars = new Map<string, { at: number; type: string; bytes: ArrayBuffer }>()
+
+export async function avatarImage(url: string): Promise<{ type: string; bytes: ArrayBuffer } | null> {
+  let host: string
+  try {
+    host = new URL(url).hostname
+  } catch {
+    return null
+  }
+  if (!host.endsWith('.googleusercontent.com')) return null // only Google's photo host, never an arbitrary URL
+  const hit = avatars.get(url)
+  if (hit && Date.now() - hit.at < AVATAR_TTL_MS) return hit
+  const res = await fetch(url, { signal: AbortSignal.timeout(5_000) }).catch(() => null)
+  const type = res?.headers.get('content-type') ?? ''
+  if (!res?.ok || !type.startsWith('image/')) return null
+  const bytes = await res.arrayBuffer()
+  if (bytes.byteLength > 512 * 1024) return null
+  avatars.set(url, { at: Date.now(), type, bytes })
+  if (avatars.size > 2_000) avatars.delete(avatars.keys().next().value!)
+  return { type, bytes }
+}
+
+// Where the UI loads the photo from; the version changes when Google's photo does.
+export const avatarPath = (url: string | null) => (url ? `/api/auth/avatar?v=${sha256(url).slice(0, 10)}` : null)
+
 // Sessions past their expiry (housekeeping job).
 export async function deleteExpiredSessions(): Promise<void> {
   await db.from('auth_sessions').delete().lt('expires_at', new Date().toISOString())
