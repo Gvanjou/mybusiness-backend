@@ -24,6 +24,13 @@ test('sign-in starts at Google with PKCE, state and our callback', async () => {
   assert.match(cookie, /HttpOnly/)
 })
 
+test('the site address from the frontend wins over a hosting platform\'s forwarded host', async () => {
+  const res = await app.request('/api/auth/google?next=/ka', { headers: { host: 'backend.up.railway.app', 'x-forwarded-host': 'backend.up.railway.app', 'x-forwarded-proto': 'https', 'x-site-origin': 'https://mysite.vercel.app' } })
+  assert.equal(new URL(res.headers.get('location')!).searchParams.get('redirect_uri'), 'https://mysite.vercel.app/api/auth/callback')
+  const post = await app.request('/api/assistant/session', { method: 'POST', headers: { host: 'backend.up.railway.app', 'x-forwarded-host': 'backend.up.railway.app', 'x-site-origin': 'https://mysite.vercel.app', origin: 'https://mysite.vercel.app', 'content-type': 'application/json' }, body: '{"locale":"ka"}' })
+  assert.equal(post.status, 401, 'same-site check passes (then sign-in is required), not 403')
+})
+
 test('a callback that was not started in this browser is refused', async () => {
   const start = await app.request('/api/auth/google?next=/en', { headers: site })
   const cookie = (start.headers.get('set-cookie') ?? '').split(';')[0]!

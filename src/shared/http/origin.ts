@@ -1,9 +1,12 @@
 import type { Context, MiddlewareHandler } from 'hono'
 import { AppError } from './app-error.js'
 
-// The site's address as the browser sees it. Requests come through the frontend proxy, which passes the
-// browser's host and protocol on.
+// The site's address as the browser sees it. Requests come through the frontend proxy, which sends it in
+// x-site-origin: hosting platforms in front of this server (Railway, Render…) overwrite the standard
+// x-forwarded-host with their own address, which would send Google sign-in back to the wrong place.
 export function publicOrigin(c: Context): string {
+  const site = c.req.header('x-site-origin')
+  if (site && /^https?:\/\/[\w.-]+(:\d+)?$/.test(site)) return site
   const host = c.req.header('x-forwarded-host') ?? c.req.header('host') ?? 'localhost'
   const proto = c.req.header('x-forwarded-proto') ?? (host.startsWith('localhost') || host.startsWith('127.') ? 'http' : 'https')
   return `${proto}://${host}`
