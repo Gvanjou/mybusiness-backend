@@ -161,7 +161,17 @@ export async function agentTurn(params: { session: Session; input: SendMessage; 
         await emit('token', { text: rest })
       }
       if (options.length && out.quickReplies.length === 0) out.quickReplies = options.slice(0, 4).map((o, i) => ({ kind: 'message', id: `ai:${i}`, label: o, text: o }))
-      if (stop.signal.aborted || !result || result.calls.length === 0) break
+      if (stop.signal.aborted || !result) break
+      if (result.calls.length === 0) {
+        // A reply that ends by announcing a search or check ("let's see what is available…") without doing it
+        // leaves the client waiting for nothing: have the model do it now and continue the same answer.
+        if (!last && announcesAction(stepText)) {
+          logger.info('agent announced an action without doing it; continuing', { session: session.id, step })
+          contents.push({ role: 'model', parts: result.parts }, { role: 'user', parts: [{ text: DO_IT_NOW }] })
+          continue
+        }
+        break
+      }
 
       // 4. Run what the model asked for; the results become its next input.
       const responses: Part[] = []
@@ -233,6 +243,18 @@ export async function agentTurn(params: { session: Session; input: SendMessage; 
   state.cardsShown = [...new Set([...state.cardsShown, ...out.cards.map((c) => c.id)])].slice(-60)
   await chatRepository.saveSession({ ...session, title: session.title ?? titleFrom(userText), locale, profile, state, turnCount: turn })
   await emit('done', { messageId })
+}
+
+const DO_IT_NOW =
+  '(Instruction from the app, not from the client.) Your reply ended by saying you would look something up. Do it now: call the tool, then continue the answer with the results. Do not repeat what you already wrote.'
+
+// "Let's see / I'll check / let me find…" at the end of a reply, in Georgian, English or Russian.
+const ANNOUNCES =
+  /(მოდით|ახლა|მაშ)[,\s]+(ვნახოთ|გავარკვიოთ|მოვძებნოთ|შევამოწმოთ|გადავხედოთ|შევარჩიოთ)|(ვნახავ|მოვძებნი|შევამოწმებ|გადავხედავ|შეგირჩევთ)|\b(let me|let's|let us|i'll|i will|now i'll)\s+(look|check|search|find|see|pull|browse)|(давайте|сейчас)\s+(посмотрим|проверим|найд[её]м|подберём|подберем)|(посмотрю|проверю|найду|подберу)/i
+
+export function announcesAction(text: string): boolean {
+  const tail = text.trim().slice(-220)
+  return tail.length > 0 && !tail.endsWith('?') && ANNOUNCES.test(tail)
 }
 
 // The chat's name in the history: the first thing the user wrote, shortened.

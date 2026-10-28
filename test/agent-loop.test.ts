@@ -131,3 +131,36 @@ test('no model available: no answer without AI, the user gets a retryable error'
   script = null
   await assert.rejects(run('რა არის due diligence?'), (err: AppError) => err.code === 'ai_unavailable')
 })
+
+test('a reply that announces a search without doing it continues until the search is done', async () => {
+  const seen: Step[] = []
+  script = async function* (params, n) {
+    seen.push(params)
+    if (n === 1) {
+      const text = 'პასიური შემოსავლისთვის ნაწილობრივი ჩართულობით კარგია მოქმედი გუნდის მქონე ბიზნესი. მოდით, ვნახოთ, რა ვარიანტებია ახლა თბილისში.'
+      yield { type: 'text', text }
+      yield { type: 'done', model: 'stub', parts: [{ text }], calls: [] }
+      return
+    }
+    if (n === 2) {
+      const c = { name: 'calculate', args: { price_gel: 40000, profit_monthly_gel: 2500 } }
+      yield { type: 'done', model: 'stub', parts: [{ functionCall: c }], calls: [c] }
+      return
+    }
+    yield { type: 'text', text: 'აი, რა ვიპოვე.' }
+    yield { type: 'done', model: 'stub', parts: [{ text: 'აი, რა ვიპოვე.' }], calls: [] }
+  }
+  const r = await run('პასიური შემოსავალი, ნაწილობრივ, თბილისი')
+  assert.equal(calls, 3, 'the announced search is carried out instead of ending the reply')
+  const texts = seen[1]!.contents.flatMap((c) => (c.parts ?? []).map((p) => p.text ?? ''))
+  assert.ok(texts.some((t) => /Do it now/.test(t)), 'the model is told to carry out what it announced')
+  assert.match(r.tokens, /მოდით, ვნახოთ[\s\S]*აი, რა ვიპოვე\./)
+})
+
+test('a reply that ends with a real question is not treated as an unfinished action', async () => {
+  const { announcesAction } = await import('../src/modules/chat/agent/agent.service.js')
+  assert.equal(announcesAction('გინდათ, ვნახოთ ვარიანტები?'), false)
+  assert.equal(announcesAction('Let me check what is on the site.'), true)
+  assert.equal(announcesAction('Давайте посмотрим варианты.'), true)
+  assert.equal(announcesAction('აი სამი ვარიანტი თქვენთვის.'), false)
+})
