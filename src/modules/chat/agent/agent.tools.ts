@@ -9,6 +9,7 @@ import { knowledge } from '../../knowledge/knowledge.service.js'
 import { webSearch } from '../../web/web.service.js'
 import { analyzeListing } from '../analysis/analysis.tool.js'
 import type { SessionState } from '../chat.model.js'
+import type { EarlierChat } from '../chat.repository.js'
 import { applyPatch } from '../profile/profile.merge.js'
 import { has, type Profile, type Track } from '../profile/profile.model.js'
 import { deriveTrack } from '../profile/profile.track.js'
@@ -42,6 +43,7 @@ export type ToolContext = {
   out: ToolOutput
   progress: (step: string, count?: number) => Promise<void>
   userText?: string // the client's message this turn, for tools that must honour what it names
+  earlier?: EarlierChat[] // the client's other conversations, newest first (read only by recall_previous_chats)
 }
 
 const GOALS = ['passive_income', 'own_job', 'growth', 'diversification', 'unsure'] as const
@@ -68,6 +70,12 @@ export const toolDeclarations: FunctionDeclaration[] = [
         exclude_shown: { type: Type.BOOLEAN, description: 'true to skip listings already shown ("show me more")' },
       },
     },
+  },
+  {
+    name: 'recall_previous_chats',
+    description:
+      'What the client said in their earlier chats (newest first): each chat\'s title and date, the facts learned about them (budget, cities, business types, goal…) and the listings it showed. Nothing is applied to this chat: ask the client before using any of it. Use only when needed (see "Earlier chats").',
+    parameters: { type: Type.OBJECT, properties: {} },
   },
   {
     name: 'get_listing',
@@ -305,6 +313,25 @@ const executors: Record<string, Executor> = {
       data_source: `live from mybusiness.ge (${ctx.s.loadedAt.toISOString().slice(11, 16)} UTC)`,
       shown: top.map((r, i) => compactListing(r.listing, ctx, i + 1, { score: r.score, reasons: r.reasons })),
       note: 'The cards are on screen. WILDCARD = a type they did not ask for but that fits.',
+    }
+  },
+
+  async recall_previous_chats(_args, ctx) {
+    const chats = (ctx.earlier ?? []).map((c) => {
+      const ids = [...new Set([c.state.contextListingId, ...c.state.cardsShown.slice().reverse()].filter((id): id is string => Boolean(id)))]
+      const listings = ids.map((id) => ctx.s.byId.get(id)).filter((l): l is CatalogListing => Boolean(l))
+      return {
+        title: c.title,
+        date: c.updatedAt.slice(0, 10),
+        facts: profileFacts(c.profile),
+        listings: listings.slice(0, 6).map((l) => ({ id: l.shortId, title: pick(l.title, ctx.locale), price_gel: l.priceGel && Math.round(l.priceGel), category: categoryLabel(l.category, ctx.locale) })),
+        listings_no_longer_on_site: ids.length - listings.length,
+      }
+    })
+    if (!chats.length) return { chats: [], note: 'This client has no earlier chats. Say so if they asked, and ask for what you need.' }
+    return {
+      chats,
+      note: 'From earlier chats, NOT applied to this one. Tell the client what you found and which chat it is from, and ask whether to use it now (offer the answers with suggest_replies). Call update_profile only with facts they confirm. A listing can be opened with get_listing by its id.',
     }
   },
 

@@ -26,6 +26,9 @@ export type StoredMessage = {
 
 export type ConversationSummary = { id: string; title: string | null; updatedAt: string }
 
+// Another conversation of the same user: what it learned about them and which listings it showed.
+export type EarlierChat = { id: string; title: string | null; updatedAt: string; profile: Profile; state: SessionState }
+
 function toSession(row: Record<string, unknown>): Session {
   return {
     id: String(row.id),
@@ -67,6 +70,20 @@ export const chatRepository = {
     return data.map((r) => ({ id: String(r.id), title: r.title, updatedAt: r.updated_at }))
   },
 
+
+  // The user's other conversations, newest first, for recalling what was said before (only on demand).
+  async earlierForUser(userId: string, excludeId: string, limit = 5): Promise<EarlierChat[]> {
+    const { data, error } = await db
+      .from('chat_sessions')
+      .select('id, title, updated_at, profile, state')
+      .eq('user_id', userId)
+      .neq('id', excludeId)
+      .not('title', 'is', null)
+      .order('updated_at', { ascending: false })
+      .limit(limit)
+    if (error) throw error
+    return data.map((r) => ({ id: String(r.id), title: r.title, updatedAt: r.updated_at, profile: parseProfile(r.profile), state: sessionStateSchema.parse(r.state ?? {}) }))
+  },
 
   async saveSession(s: Session): Promise<void> {
     const { error } = await db

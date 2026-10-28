@@ -17,11 +17,13 @@ let calls = 0
 
 const saved = { ...chatRepository }
 const stored: { role: string; content: string }[] = []
+let earlier: Awaited<ReturnType<typeof chatRepository.earlierForUser>> = []
 
 before(() => {
   chatRepository.addMessage = async (_id, m) => stored.push(m)
   chatRepository.recentMessages = async () => []
   chatRepository.saveSession = async () => {}
+  chatRepository.earlierForUser = async () => earlier
   ai.agentStep = ((params: Step) => {
     if (!script) throw new AiUnavailableError('responder')
     return script(params, ++calls)
@@ -291,4 +293,37 @@ test('a turn that fails keeps the message as unanswered; the retry replaces it i
     chatRepository.recentMessages = recent
     chatRepository.deleteMessage = del
   }
+})
+
+test('earlier chats: only counted in the context; recalled on demand, nothing applied without the client', async () => {
+  earlier = [
+    {
+      id: '00000000-0000-4000-8000-000000000009',
+      title: 'კაფე თბილისში',
+      updatedAt: '2026-10-27T10:00:00Z',
+      profile: { budgetGel: { value: 50000, status: 'known', turn: 1 }, cities: { value: ['Tbilisi'], status: 'known', turn: 1 } },
+      state: sessionStateSchema.parse({}),
+    },
+  ]
+  const seen: Step[] = []
+  script = async function* (params, n) {
+    seen.push(params)
+    if (n === 1) {
+      const c = { name: 'recall_previous_chats', args: {} }
+      yield { type: 'done', model: 'stub', parts: [{ functionCall: c }], calls: [c] }
+      return
+    }
+    yield { type: 'text', text: 'წინა საუბარში ბიუჯეტი 50 000 ₾ იყო — ისევ ეს გამოვიყენო?' }
+    yield { type: 'done', model: 'stub', parts: [{ text: 'წინა საუბარში ბიუჯეტი 50 000 ₾ იყო — ისევ ეს გამოვიყენო?' }], calls: [] }
+  }
+  const r = await run('რა ბიუჯეტი გითხარი?')
+  earlier = []
+  assert.match(seen[0]!.system, /"earlier_chats":1/, 'the model knows there is an earlier chat')
+  assert.doesNotMatch(seen[0]!.system, /50000/, 'but not what was in it until it asks')
+  const recalled = seen[1]!.contents.flatMap((c) => c.parts ?? []).find((p) => p.functionResponse?.name === 'recall_previous_chats')!.functionResponse!.response!.result as { chats: { title: string; facts: Record<string, unknown> }[] }
+  assert.equal(recalled.chats[0]!.title, 'კაფე თბილისში')
+  assert.equal(recalled.chats[0]!.facts.budgetGel, 50000)
+  const profile = r.of('profile')[0] as { items: { key: string }[] }
+  assert.equal(profile.items.some((i) => i.key === 'budgetGel'), false, 'the old budget is not applied to this chat')
+  assert.equal(r.of('form').length, 0, 'no fallback form on a recall turn')
 })

@@ -117,6 +117,8 @@ export async function agentTurn(params: { session: Session; input: SendMessage; 
     out,
     progress: (step, count) => emit('status', count === undefined ? { step } : { step, count }),
     userText,
+    // Other chats are only counted for the model here; their content is read when it asks (recall_previous_chats).
+    earlier: session.userId ? await chatRepository.earlierForUser(session.userId, session.id).catch((err) => (logger.warn('earlier chats unavailable', errorFields(err)), [])) : [],
   }
   const toolResults: unknown[] = []
   const calledTools: string[] = []
@@ -247,7 +249,7 @@ export async function agentTurn(params: { session: Session; input: SendMessage; 
     // A form only early on (budget, goal or time still unknown) and never on a turn that worked on listings: a
     // location or comparison answer that mentions questions is not a questionnaire.
     const early = !has(ctx.profile, 'budgetGel') || !(has(ctx.profile, 'goal') || has(ctx.profile, 'involvement'))
-    const listingWork = calledTools.some((t) => ['search_listings', 'get_listing', 'analyze_listing', 'location_analysis', 'compare_listings', 'calculate', 'market_stats'].includes(t))
+    const listingWork = calledTools.some((t) => ['search_listings', 'get_listing', 'analyze_listing', 'location_analysis', 'compare_listings', 'calculate', 'market_stats', 'recall_previous_chats'].includes(t))
     if (!out.form && early && !listingWork && promisesForm(reply)) {
       const named = has(ctx.profile, 'sectors') ? [] : categoriesNamed(userText)
       if (named.length) ctx.profile = applyPatch(ctx.profile, { sectors: named }, ctx.turn).profile
@@ -357,6 +359,7 @@ function agentContext(ctx: ToolContext) {
     today: new Date().toISOString().slice(0, 10),
     profile: profileFacts(ctx.profile),
     listings_on_screen: shown.filter(Boolean),
+    earlier_chats: ctx.earlier?.length ?? 0,
     listing_in_focus: focus ? { id: focus.shortId, title: pick(focus.title, ctx.locale), card_on_screen: ctx.state.cardsShown.includes(focus.id) } : null,
     site: { active_listings: ctx.s.listings.length, usd_to_gel: ctx.s.rates.USD },
   }
