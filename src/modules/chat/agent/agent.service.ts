@@ -17,6 +17,7 @@ import { entryQuickReplies, profileItems, texts } from '../templates/templates.j
 import { collectNumbers, validateReply } from '../validator/validator.service.js'
 import { agentSystem } from './agent.prompt.js'
 import { applyFormAnswers, profileFacts, runTool, terminalTools, toolDeclarations, type ToolContext, type ToolOutput } from './agent.tools.js'
+import { clickedKey, mergeChips, nextSteps, offeredFrom } from './agent.next.js'
 import { createTextFilter } from './agent.text.js'
 
 // Every answer comes from Gemini: it answers from its own knowledge and calls tools for anything about real
@@ -108,6 +109,8 @@ export async function agentTurn(params: { session: Session; input: SendMessage; 
     progress: (step, count) => emit('status', count === undefined ? { step } : { step, count }),
   }
   const toolResults: unknown[] = []
+  const calledTools: string[] = []
+  const justClicked = clickedKey(state.nextShown, userText)
   const endsAt = Date.now() + TURN_BUDGET_MS
   const stop = new AbortController()
   const stepSignal = AbortSignal.any([signal, stop.signal])
@@ -177,6 +180,7 @@ export async function agentTurn(params: { session: Session; input: SendMessage; 
       const responses: Part[] = []
       for (const call of result.calls) {
         const name = call.name ?? ''
+        calledTools.push(name)
         const value = await runTool(name, call.args ?? {}, ctx)
         toolResults.push(value)
         responses.push({ functionResponse: { name, response: { result: value } } })
@@ -229,6 +233,9 @@ export async function agentTurn(params: { session: Session; input: SendMessage; 
   if (out.compare) await emit('compare', out.compare)
   if (out.sources.length) await emit('sources', { items: out.sources })
   if (out.form) await emit('form', out.form)
+  // The app's next steps go after the model's answers; what was offered is remembered for the next turn.
+  out.quickReplies = mergeChips(out.quickReplies, nextSteps(ctx, calledTools, justClicked))
+  state.nextShown = offeredFrom(out.quickReplies)
   await emit('quick_replies', { items: out.quickReplies })
   await emit('profile', { items: profileItems(profile, locale) })
 

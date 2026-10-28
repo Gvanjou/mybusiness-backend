@@ -306,6 +306,7 @@ const executors: Record<string, Executor> = {
     const onScreen = ctx.state.cardsShown.includes(l.id)
     if (!onScreen) ctx.out.cards = [toCard(l, ctx.locale, fit, ctx.s.rates.USD)]
     ctx.out.compare = null
+    if (ctx.state.contextListingId !== l.id) ctx.state.aspectsAsked = [] // a different listing: its aspects start fresh
     ctx.state.contextListingId = l.id
     if (!ctx.state.lastShown.includes(l.id)) ctx.state.lastShown = [l.id]
     return {
@@ -325,6 +326,7 @@ const executors: Record<string, Executor> = {
     const track = deriveTrack(ctx.profile)
     const { analysis, facts } = analyzeListing({ listing: l, snapshot: ctx.s, profile: ctx.profile, track, locale: ctx.locale, aspect })
     ctx.state.contextListingId = l.id
+    if (!ctx.state.aspectsAsked.includes(aspect)) ctx.state.aspectsAsked.push(aspect)
     if (aspect === 'similar' && analysis.comparables) {
       ctx.out.cards = analysis.comparables.cards
       ctx.state.lastShown = [l.id, ...analysis.comparables.cards.map((c) => c.id)]
@@ -373,7 +375,11 @@ const executors: Record<string, Executor> = {
     const type = typeof args.business_type === 'string' && knownCategoryKeys.includes(args.business_type) ? args.business_type : (listing && !['commercial_space', 'real_estate', 'offices', 'warehouse', 'land'].includes(listing.category) ? listing.category : null)
     const { facts, sources } = await analyzeArea({ at, listing, businessType: type, s: ctx.s, locale: ctx.locale, sessionId: ctx.sessionId })
     if (sources.length) ctx.out.sources = sources
-    if (listing) ctx.state.contextListingId = listing.id
+    if (listing) {
+      if (ctx.state.contextListingId !== listing.id) ctx.state.aspectsAsked = []
+      ctx.state.contextListingId = listing.id
+      if (!ctx.state.aspectsAsked.includes('competition')) ctx.state.aspectsAsked.push('competition')
+    }
     return {
       listing: listing && { id: listing.shortId, title: pick(listing.title, ctx.locale), category: categoryLabel(listing.category, ctx.locale), area_m2: listing.area, price_gel: round(listing.priceGel) },
       ...facts,

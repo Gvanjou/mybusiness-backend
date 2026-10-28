@@ -2,10 +2,12 @@ import { pick, type Locale } from '../../../shared/i18n/locale.js'
 import { val, type Profile } from '../profile/profile.model.js'
 import { questions, showResultsLabel, type QuestionId } from './planner.questions.js'
 
+// icon marks a next-step chip the app suggests (the UI draws it with that icon); the model's answers have none.
+export type QuickReplyIcon = 'compare' | 'location' | 'risk' | 'market' | 'calc' | 'question' | 'search' | 'check' | 'best' | 'more'
 export type QuickReply =
-  | { kind: 'answer'; id: string; label: string; questionId: QuestionId; optionId: string }
-  | { kind: 'message'; id: string; label: string; text: string }
-  | { kind: 'action'; id: string; label: string; action: 'show_results' }
+  | { kind: 'answer'; id: string; label: string; questionId: QuestionId; optionId: string; icon?: QuickReplyIcon }
+  | { kind: 'message'; id: string; label: string; text: string; icon?: QuickReplyIcon }
+  | { kind: 'action'; id: string; label: string; action: 'show_results'; icon?: QuickReplyIcon }
 
 // Resolves a tapped option (static or dynamic) to profile values.
 export function optionPatch(questionId: QuestionId, optionId: string, profile: Profile = {}): Partial<Record<string, unknown>> | null {

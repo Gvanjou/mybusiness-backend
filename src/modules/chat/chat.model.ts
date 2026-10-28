@@ -42,6 +42,7 @@ export const sessionStateSchema = z.object({
   lastIntent: z.string().optional(),
   contextListingId: z.string().optional(),
   cardsShown: z.array(z.string()).default([]), // listings whose card is already in the conversation: not shown again
+  nextShown: z.array(z.object({ key: z.string(), text: z.string() })).default([]), // next-step chips offered last turn
   aspectsAsked: z.array(z.string()).default([]), // aspects already analysed for the listing in focus
   plannedUse: z.string().optional(), // what the user plans to open in the space in focus (a category key)
   reasked: z.array(z.string()).default([]), // goal / sector questions asked a second time (never a third)
