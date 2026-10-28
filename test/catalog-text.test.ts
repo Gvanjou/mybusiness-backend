@@ -73,3 +73,21 @@ test('a business type named in a message is recognised in any language and with 
   assert.deepEqual(categoriesNamed('a good bargain, other services'), [])
   assert.deepEqual(categoriesNamed('მინდა ბიზნესში ფულის ჩადება'), [])
 })
+
+test('figures as sellers write them: per day, ranges, "აშშ", yearly — always shown per month, with the original kept', async () => {
+  const { textInsights } = await import('../src/modules/catalog/catalog.text.js')
+  const site = { employees: null, yearEstablished: null, revenueMonthly: null, incomeMonthly: null, currency: null }
+  const read = (text: string, category = 'retail') => textInsights({ category, dealType: 'sale', texts: [text], site, hasLocation: true, priceKnown: true })
+  const shop = read('მაღაზიის ფართი არის 46 კვ, ფართის იჯარა არის 500$. დღიური ბრუნვა საშუალოდ 700-800 ლარი')
+  assert.deepEqual([shop.financials.revenue_monthly?.min, shop.financials.revenue_monthly?.max], [21000, 24000], '700–800 a day is 21 000–24 000 a month')
+  assert.deepEqual(shop.financials.revenue_monthly?.stated, { min: 700, max: 800, period: 'day' })
+  assert.deepEqual([shop.premises.rent_monthly?.min, shop.premises.rent_monthly?.currency], [500, 'USD'])
+  const range = read('👉 მიმდინარე ბრუნვა: 10,000 – 20,000 ლარი თვეში')
+  assert.deepEqual([range.financials.revenue_monthly?.min, range.financials.revenue_monthly?.max, range.financials.revenue_monthly?.stated], [10000, 20000, undefined])
+  const usa = read('იჯარის ფასი: 2000 აშშ დოლარი', 'restaurants')
+  assert.equal(usa.premises.rent_monthly?.currency, 'USD')
+  const yearly = read('წლიური ბრუნვა 700000ლარი - ფასი - 25000$', 'bakery')
+  assert.equal(yearly.financials.revenue_monthly?.min, 58333)
+  assert.equal(read('ობიექტი ამჟამად დახურულია, ადრე მოქმედი კაფე იყო').isOperating, false, 'closed beats an old "operating"')
+  assert.equal(read('მოქმედი კაფე დახურული ტერასით').isOperating, true, 'a covered terrace is not a closed business')
+})

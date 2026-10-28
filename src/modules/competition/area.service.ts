@@ -206,10 +206,11 @@ export async function competitionBrief(l: CatalogListing): Promise<Record<string
   if (!at || at.precision === 'city') return { note: 'only the city is known; competition around the exact address cannot be judged' }
   const facts = await mapFacts(at, PROPERTY_LIKE.has(l.category) ? null : l.category, isCommercialSpace(l), l.area)
   if (!facts) return null
-  const c = facts.competition as { direct_competitors?: unknown; level_by_count?: string; nearest_direct?: { name: string; distance_m: number }[] } | null
+  const c = facts.competition as { radius_m?: number; direct_competitors?: unknown; level_by_count?: string; nearest_direct?: { name: string; distance_m: number }[] } | null
   return {
     location: at.label,
     precision: at.precision,
+    radius_m: c?.radius_m ?? null,
     direct_competitors: c?.direct_competitors ?? null,
     level: c?.level_by_count ?? null,
     nearest: c?.nearest_direct?.slice(0, 4).map((n) => `${n.name} (${n.distance_m} m)`) ?? [],

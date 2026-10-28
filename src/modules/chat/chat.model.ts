@@ -14,9 +14,15 @@ export const sendMessageSchema = z
         label: z.string().max(120),
       })
       .optional(),
-    action: z.enum(['show_results']).optional(),
+    // show_results: the "show me options" chip · continue: carry on the last answer, which stopped before its end
+    action: z.enum(['show_results', 'continue']).optional(),
     form: formAnswersSchema.optional(), // answers to the intake form the assistant showed
-    context: z.object({ listingId: z.string().max(200).optional() }).optional(),
+    context: z
+      .object({
+        listingId: z.string().max(200).optional(),
+        saved: z.array(z.string().max(40)).max(20).optional(), // listings the client saved in this browser (ids)
+      })
+      .optional(),
     locale: localeSchema.optional(),
     model: z.string().max(60).optional(), // a model the client picked; absent or 'auto' = the best available
   })
@@ -35,22 +41,22 @@ export const feedbackSchema = z.object({
 
 // Per-session conversation state, persisted in chat_sessions.state.
 export const sessionStateSchema = z.object({
-  asked: z.array(z.string()).default([]),
-  discoveryTurns: z.number().int().default(0),
-  lastShown: z.array(z.string()).default([]),
-  shownCount: z.number().int().default(0),
-  budgetRealityShown: z.boolean().default(false),
+  lastShown: z.array(z.string()).default([]), // the listings on screen now (the latest set), in order
   lastIntent: z.string().optional(),
   contextListingId: z.string().optional(),
   cardsShown: z.array(z.string()).default([]), // listings whose card is already in the conversation: not shown again
+  // Every listing this chat has shown, in order of first appearance: listing #n is refs[n - 1], on its card and in
+  // the text alike, for the whole chat.
+  refs: z.array(z.string()).default([]),
+  // What the map showed around a listing, kept so every later answer quotes the same competitors and counts.
+  places: z
+    .record(z.string(), z.object({ radiusM: z.number(), direct: z.number(), within150m: z.number(), nearest: z.array(z.string()), precision: z.string() }))
+    .default({}),
+  topics: z.record(z.string(), z.array(z.string())).default({}), // listing id → topics already answered (risks, location…)
   nextShown: z.array(z.object({ key: z.string(), text: z.string() })).default([]), // next-step chips offered last turn
-  aspectsAsked: z.array(z.string()).default([]), // aspects already analysed for the listing in focus
-  plannedUse: z.string().optional(), // what the user plans to open in the space in focus (a category key)
-  reasked: z.array(z.string()).default([]), // goal / sector questions asked a second time (never a third)
-  lastTopics: z.array(z.string()).default([]), // knowledge sections answered last turn (not repeated next time)
-  pending: z.object({ questionId: z.string() }).optional(), // the discovery question asked last turn, awaiting an answer
-  // A new budget far from the stated one, waiting for the user to confirm it.
-  pendingBudget: z.object({ gel: z.number(), amount: z.number(), currency: z.string() }).optional(),
+  askedRecently: z.array(z.string()).default([]), // the closing questions of the last two answers (never asked again)
+  profileEdited: z.array(z.string()).default([]), // facts the client changed in the memory strip since the last answer
+  saved: z.array(z.string()).default([]), // listings the client saved (ids), as the browser last reported them
 })
 
 export type SessionState = z.infer<typeof sessionStateSchema>

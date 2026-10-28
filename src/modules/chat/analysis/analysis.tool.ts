@@ -1,7 +1,7 @@
 import { formatGel, pick, type Locale } from '../../../shared/i18n/locale.js'
 import { categoryLabel, cityLabel } from '../../catalog/catalog.labels.js'
 import type { CatalogListing } from '../../catalog/catalog.model.js'
-import { financialsLevel, type CatalogSnapshot } from '../../catalog/catalog.service.js'
+import { financialsLevel, peerPool, type CatalogSnapshot } from '../../catalog/catalog.service.js'
 import type { Profile, Track } from '../profile/profile.model.js'
 import type { Aspect } from '../router/router.schema.js'
 import { toCard, type ListingCard } from '../tools/cards.js'
@@ -61,13 +61,11 @@ function comparables(l: CatalogListing, s: CatalogSnapshot): CatalogListing[] {
     .map((r) => r.x)
 }
 
-// Price distribution of the listing's category (city if enough listings, else all cities).
+// Prices of comparable listings: the same kind of business and size, in the same city when there are enough (the
+// same set the fact sheet uses, so the analysis and the reply never quote two different medians).
 function market(l: CatalogListing, s: CatalogSnapshot) {
-  const sale = s.listings.filter((x) => x.dealType !== 'lease' && x.category === l.category && x.priceGel !== null && x.id !== l.id)
-  const local = sale.filter((x) => x.city === l.city)
-  const useLocal = local.length >= 4
-  const set = (useLocal ? local : sale).map((x) => x.priceGel!).sort((a, b) => a - b)
-  return { prices: set, local: useLocal }
+  const { pool, inCity } = peerPool(l, s)
+  return { prices: pool.map((x) => x.priceGel!).sort((a, b) => a - b), local: inCity }
 }
 
 // Price per m², only when the area and the result are plausible: sellers sometimes enter the land plot
@@ -99,7 +97,7 @@ export function analyzeListing(p: {
   let position: 'below' | 'typical' | 'above' | 'unknown' = 'unknown'
   let diffPct = 0
   let band: NonNullable<ListingAnalysis['price']>['band']
-  if (l.priceGel !== null && m.prices.length >= 4) {
+  if (l.priceGel !== null && m.prices.length >= 3) {
     const p25 = quantile(m.prices, 0.25)
     const median = quantile(m.prices, 0.5)
     const p75 = quantile(m.prices, 0.75)

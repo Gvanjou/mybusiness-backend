@@ -217,6 +217,26 @@ export function withListings(s: Snapshot, upsert: CatalogListing[], remove: Set<
   }
 }
 
+// Listings to judge a price against: the same kind of business, in the same city when there are enough, and of a
+// similar size when the area is known — a 15 m² kiosk is not measured against 300 m² restaurants.
+export function peerPool(l: CatalogListing, s: Snapshot, min = 3): { pool: CatalogListing[]; inCity: boolean; sized: [number, number] | null } {
+  const same = s.listings.filter((x) => x.id !== l.id && x.dealType === l.dealType && x.category === l.category && x.priceGel !== null)
+  const local = same.filter((x) => x.city === l.city)
+  const inCity = local.length >= min
+  let pool = inCity ? local : same
+  let sized: [number, number] | null = null
+  if (l.area && l.area >= 5) {
+    const lo = Math.round(l.area * 0.5)
+    const hi = Math.round(l.area * 2)
+    const bySize = pool.filter((x) => x.area !== null && x.area >= lo && x.area <= hi)
+    if (bySize.length >= min) {
+      pool = bySize
+      sized = [lo, hi]
+    }
+  }
+  return { pool, inCity, sized }
+}
+
 export function financialsLevel(l: CatalogListing): FinancialsLevel {
   const f = l.insights?.financials
   if (f && (f.revenue_monthly || f.profit_monthly || f.rent_income_monthly)) return 'stated'

@@ -35,6 +35,8 @@ const ON_REQUEST = /(financ|P&L|revenue|figures|ფინანს|შემო�
 const LEASED = /\b(leased|lease|rented premises|rent is)\b|იჯარ|аренд/i
 const OWNED = /\b(own(ed)? (premises|property|building|space))\b|საკუთრებაშია|საკუთარი ფართ|в собственности|собственное помещение/i
 const OPERATING = /fully operat|operating business|currently operating|running business|მოქმედი|ფუნქციონირებად|действующ|работающ/i
+// Closed now. "დახურული ტერასა" (a covered terrace) is not a closed business, so only the predicate counts.
+const CLOSED = /დახურულია|ამჟამად დახურული|დროებით დახურული|არ ფუნქციონირებს|ამჟამად არ მუშაობს|შეჩერებულია|currently closed|temporarily closed|is closed|not operating|not in operation|не работает|временно закрыт|сейчас закрыт/i
 const REASON = /(?:reason for (?:the )?sale|selling (?:because|due to)|გაყიდვის მიზეზ\S*|იყიდება იმის გამო|причина продажи)[:\s—-]*([^.\n]{5,120})/i
 
 const INCLUDED: [RegExp, string][] = [
@@ -74,8 +76,14 @@ export function textInsights(p: {
   const cur = p.site.currency ?? 'GEL'
   const amounts = extractAmounts(text)
   const monthly = (role: 'revenue' | 'profit' | 'rent') => {
-    const a = amounts.find((x) => x.role === role)
-    return a ? money(a.period === 'year' ? Math.round(a.value / 12) : a.value, a.currency, `${role} stated in the listing text`) : null
+    // Of several figures, one that says its period ("თვეში", "დღიური") beats a bare one (often a total or a goal).
+    const a = amounts.filter((x) => x.role === role).sort((x, y) => Number(!x.period) - Number(!y.period))[0]
+    if (!a) return null
+    const top = a.max ?? a.value
+    const perMonth = { day: 30, week: 4.33, year: 1 / 12 }
+    if (!a.period || a.period === 'month') return { min: a.value, max: top, currency: a.currency, evidence: `${role} stated in the listing text` }
+    const k = perMonth[a.period]
+    return { min: Math.round(a.value * k), max: Math.round(top * k), currency: a.currency, evidence: `${role} stated in the listing text, per ${a.period}`, stated: { min: a.value, max: top, period: a.period } }
   }
   const revenue = p.site.revenueMonthly ? money(p.site.revenueMonthly, cur, 'monthly revenue field on mybusiness.ge') : monthly('revenue')
   const profit = p.site.incomeMonthly ? money(p.site.incomeMonthly, cur, 'monthly income field on mybusiness.ge') : monthly('profit')
@@ -140,7 +148,7 @@ export function textInsights(p: {
   return {
     source: 'text',
     assetClass: p.dealType === 'partnership' ? 'partnership' : p.category === 'land' ? 'land' : ['real_estate', 'commercial_space'].includes(p.category) ? 'real_estate' : 'operating_business',
-    isOperating: OPERATING.test(text) ? true : null,
+    isOperating: CLOSED.test(text) ? false : OPERATING.test(text) ? true : null,
     operatingModel: 'unknown',
     skills: [],
     financials: { revenue_monthly: revenue, profit_monthly: profit, rent_income_monthly: rentIncome, other_figures: onRequest ? ['detailed financials (P&L) available on request'] : [] },

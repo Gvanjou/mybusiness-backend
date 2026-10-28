@@ -11,6 +11,8 @@ import { assetClassOf, type ReasonCode, type Scored } from './search.tool.js'
 export type ListingCard = {
   id: string
   shortId: string
+  n?: number // the listing's number in this chat (#n), the same in the text
+  name?: string // short display name: kind · place · size
   url: string
   title: string
   category: string
@@ -32,7 +34,7 @@ export type ListingCard = {
   financials: 'stated' | 'vague' | 'none'
   completeness: number
   summary: string
-  reasons: { code: ReasonCode; label: string; tone: 'good' | 'warn' | 'info' }[]
+  reasons: { code: ReasonCode | string; label: string; tone: 'good' | 'warn' | 'info' }[]
   wildcard: boolean
 }
 

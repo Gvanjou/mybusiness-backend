@@ -209,7 +209,7 @@ export const ai = {
   // budgetMs caps the whole step, so a slow model cannot eat the turn.
   async *agentStep(
     params: { system: string; contents: Content[]; tools: FunctionDeclaration[]; signal?: AbortSignal; budgetMs?: number } & CallMeta,
-  ): AsyncGenerator<{ type: 'text'; text: string } | { type: 'done'; model: string; parts: Part[]; calls: FunctionCall[]; cut?: boolean }> {
+  ): AsyncGenerator<{ type: 'text'; text: string } | { type: 'done'; model: string; parts: Part[]; calls: FunctionCall[]; cut?: 'length' | 'stalled' }> {
     const task = 'responder' as const
     // budgetMs limits how long we wait for a model to START answering; a started answer may run to the hard cap.
     const startBy = Date.now() + Math.min(params.budgetMs ?? STREAM_TOTAL_TIMEOUT_MS, STREAM_TOTAL_TIMEOUT_MS)
@@ -226,8 +226,9 @@ export const ai = {
             systemInstruction: params.system,
             tools: params.tools.length ? [{ functionDeclarations: params.tools }] : undefined,
             temperature: 0.5,
-            // Georgian text takes many tokens per word: a full comparison needs room. A cut answer is continued.
-            maxOutputTokens: 6_000,
+            // Georgian text takes many tokens per word, and thinking counts too: a full comparison needs room.
+            // An answer cut at the limit is continued in the next step.
+            maxOutputTokens: 12_000,
             thinkingConfig: { thinkingLevel: thinkingByTask[task] },
             abortSignal: signal,
           },
@@ -242,6 +243,8 @@ export const ai = {
     const parts: Part[] = []
     let usage: { promptTokenCount?: number; candidatesTokenCount?: number } | undefined
     let finish: string | undefined
+    // The stream stopped before Google said it was finished (silence, the hard cap, a broken connection).
+    let stalled = false
     const take = (chunk: GenerateContentResponse) => {
       usage = chunk.usageMetadata ?? usage
       finish = chunk.candidates?.[0]?.finishReason ?? finish
@@ -259,6 +262,7 @@ export const ai = {
         // Past the hard cap: keep what was written instead of failing the whole turn.
         if (left <= 0) {
           logger.warn('agent step hit the hard cap; using the partial answer', { model: stream.model })
+          stalled = true
           break
         }
         const chunk = await deadline(stream.iterator.next(), Math.min(STREAM_IDLE_TIMEOUT_MS, left), `chunk from ${stream.model}`)
@@ -270,10 +274,14 @@ export const ai = {
       logUsage(task, stream.model, 'error', stream.started, params, usage)
       if (parts.length === 0) throw err
       logger.warn('agent step failed after streaming; using the partial answer', { model: stream.model, ...errorFields(err) })
+      stalled = true
     }
     const calls = parts.flatMap((p) => (p.functionCall ? [p.functionCall] : []))
-    // cut: Google stopped at the output limit mid-answer; the caller continues it.
-    yield { type: 'done', model: stream.model, parts, calls, cut: finish === 'MAX_TOKENS' }
+    // cut: the answer stopped mid-way, at the output limit or because the stream went quiet; the caller continues it
+    // or marks it unfinished, so a half sentence is never saved as a finished answer.
+    // A stream that simply ended without a finish reason was cut off too.
+    const cut = finish === 'MAX_TOKENS' ? 'length' : (stalled || !finish) && !params.signal?.aborted ? 'stalled' : undefined
+    yield { type: 'done', model: stream.model, parts, calls, cut }
   },
 
   // A short answer from Gemini with Google Search, plus the pages it used.

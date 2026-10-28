@@ -3,7 +3,9 @@ import type { Localized } from '../../shared/i18n/locale.js'
 export type AssetClass = 'operating_business' | 'real_estate' | 'land' | 'commercial_space' | 'partnership' | 'other'
 export type OperatingModel = 'passive' | 'semi_passive' | 'hands_on' | 'unknown'
 
-export type Money = { min: number; max: number; currency: string; evidence: string } | null
+// min/max are per month. stated keeps the figure as the seller wrote it when that was per day, week or year
+// ("700–800 ₾ a day"), so the reply and the table can show both and never pass a daily figure off as monthly.
+export type Money = { min: number; max: number; currency: string; evidence: string; stated?: { min: number; max: number; period: 'day' | 'week' | 'year' } } | null
 
 export type CatalogListing = {
   id: string

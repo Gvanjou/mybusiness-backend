@@ -13,9 +13,14 @@ import { quota } from '../ai/ai.quota.js'
 import { requireUser, type User } from '../auth/auth.service.js'
 import { clearOpenConversation, openConversationId, setOpenConversation } from './chat.cookie.js'
 import { z } from 'zod'
+import { alerts } from '../alerts/alerts.service.js'
+import { catalog } from '../catalog/catalog.service.js'
+import { normalizeCity, knownCategoryKeys } from '../catalog/catalog.labels.js'
+import { applyPatch } from './profile/profile.merge.js'
 import { agentTurn } from './agent/agent.service.js'
+import { cardFor } from './agent/agent.facts.js'
 import { AUDIO_TYPES, MAX_AUDIO_BYTES, MIN_AUDIO_BYTES, transcribe } from './voice/voice.service.js'
-import { createSessionSchema, feedbackSchema, sendMessageSchema } from './chat.model.js'
+import { createSessionSchema, feedbackSchema, sendMessageSchema, sessionStateSchema } from './chat.model.js'
 import { chatRepository, type Session } from './chat.repository.js'
 import { profileItems, entryQuickReplies, texts } from './templates/templates.js'
 
@@ -25,6 +30,13 @@ const messagesPerSession = new RateLimiter(env.CHAT_MESSAGES_PER_MINUTE, 60_000)
 const messagesPerUser = new RateLimiter(env.CHAT_MESSAGES_PER_DAY, 24 * 60 * 60_000)
 const inFlight = new Set<string>()
 const voicePerSession = new RateLimiter(6, 60_000)
+const PING_MS = 5_000
+
+const profileEditSchema = z.object({
+  key: z.enum(['budgetGel', 'cities', 'sectors', 'involvement', 'goal']),
+  value: z.union([z.number(), z.string().max(40), z.array(z.string().max(40)).max(5)]).optional(),
+  remove: z.boolean().optional(),
+})
 
 const limit = bodyLimit({
   maxSize: 16 * 1024,
@@ -168,6 +180,64 @@ export const chatRoutes = new Hono()
     return c.body(null, 204)
   })
 
+  // The memory strip: the client corrects or removes something the assistant remembers. The next answer confirms it
+  // in one line.
+  .patch('/profile', limit, async (c) => {
+    const { session } = await requireConversation(c)
+    const body = await json(c, (b) => profileEditSchema.parse(b))
+    let profile = structuredClone(session.profile)
+    const state = structuredClone(session.state)
+    if (body.remove) {
+      delete profile[body.key]
+      if (body.key === 'cities') delete profile.locationFlexible
+    } else {
+      const s = await catalog.get()
+      const v = body.value
+      const patch: Record<string, unknown> = {}
+      if (body.key === 'budgetGel' && typeof v === 'number' && v >= 500) patch.budgetGel = Math.round(v)
+      if (body.key === 'cities' && Array.isArray(v)) {
+        const cities = v.map((x) => normalizeCity(String(x), s.cities)).filter((x): x is string => x !== null)
+        if (cities.length) Object.assign(patch, { cities, locationFlexible: false })
+        else if (v.length === 0) patch.locationFlexible = true
+      }
+      if (body.key === 'sectors' && Array.isArray(v)) patch.sectors = v.map(String).filter((x) => knownCategoryKeys.includes(x))
+      if ((body.key === 'involvement' || body.key === 'goal') && typeof v === 'string') patch[body.key] = v
+      if (!Object.keys(patch).length) throw new AppError('bad_request', 'Invalid value')
+      profile = applyPatch(profile, patch, session.turnCount).profile
+    }
+    state.profileEdited = [...new Set([...state.profileEdited, body.key])]
+    await chatRepository.saveSession({ ...session, profile, state })
+    return c.json({ items: profileItems(profile, session.locale) })
+  })
+
+  // Saved searches with listings published since the client last looked.
+  .get('/alerts', async (c) => {
+    const user = await requireUser(c)
+    const [s, list] = await Promise.all([catalog.get(), alerts.listForUser(user.id)])
+    const open = openConversationId(c)
+    const locale = (open && (await chatRepository.findForUser(open, user.id))?.locale) || 'ka'
+    return c.json({
+      items: list.map((a) => {
+        const fresh = alerts.newMatches(a, s)
+        // These cards are not numbered: they belong to no chat yet.
+        const cards = fresh.slice(0, 3).map((l) => ({ ...cardFor(l, s, sessionStateSchema.parse({}), locale), n: undefined }))
+        return { id: a.id, label: a.label, newCount: fresh.length, cards }
+      }),
+    })
+  })
+
+  .post('/alerts/:id/seen', limit, async (c) => {
+    const user = await requireUser(c)
+    await alerts.markSeen(user.id, c.req.param('id'))
+    return c.body(null, 204)
+  })
+
+  .delete('/alerts/:id', async (c) => {
+    const user = await requireUser(c)
+    if (!(await alerts.remove(user.id, c.req.param('id')))) throw new AppError('not_found', 'Alert not found')
+    return c.body(null, 204)
+  })
+
   .post('/messages', limit, async (c) => {
     const { user, session } = await requireConversation(c)
     const input = await json(c, (b) => sendMessageSchema.parse(b))
@@ -182,18 +252,27 @@ export const chatRoutes = new Hono()
       async (stream) => {
         const controller = new AbortController()
         stream.onAbort(() => controller.abort())
+        // A comment line every few seconds: proxies keep the connection open while a tool runs or a model thinks,
+        // and the client can tell a slow answer from a dead stream.
+        const ping = setInterval(() => {
+          if (!stream.aborted && !stream.closed) void stream.write(': ping\n\n').catch(() => undefined)
+        }, PING_MS)
         try {
           await agentTurn({
             session,
             input,
             signal: controller.signal,
-            emit: (event, data) => stream.writeSSE({ event, data: JSON.stringify(data) }),
+            emit: async (event, data) => {
+              if (stream.aborted || stream.closed) return
+              await stream.writeSSE({ event, data: JSON.stringify(data) })
+            },
           })
         } catch (err) {
           const safe = err instanceof AppError ? err : new AppError('internal', 'Something went wrong. Please try again.')
           if (!(err instanceof AppError)) logger.error('chat turn failed', { session: session.id, ...errorFields(err) })
           await stream.writeSSE({ event: 'error', data: JSON.stringify({ code: safe.code, message: safe.message, ...safe.details }) })
         } finally {
+          clearInterval(ping)
           inFlight.delete(session.id)
         }
       },

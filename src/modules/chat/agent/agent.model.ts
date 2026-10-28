@@ -11,7 +11,8 @@ export const intakeFormSchema = z.object({
       z.object({
         field: z.enum(intakeFields),
         question: z.string().max(200),
-        options: z.array(z.object({ value: z.string().max(60), label: z.string().max(80) })).min(2).max(6),
+        options: z.array(z.object({ value: z.string().max(60), label: z.string().max(80) })).min(2).max(9),
+        selected: z.string().max(60).optional(), // what the client already said: pre-selected, not asked again
       }),
     )
     .min(1)

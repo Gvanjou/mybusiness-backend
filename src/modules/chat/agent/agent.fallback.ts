@@ -1,12 +1,14 @@
-import { pick, type Locale } from '../../../shared/i18n/locale.js'
-import { categoryLabel, cityLabel } from '../../catalog/catalog.labels.js'
-import type { CatalogSnapshot } from '../../catalog/catalog.service.js'
+import { pick, type Locale, type Localized } from '../../../shared/i18n/locale.js'
 import { questions, type QuestionId } from '../planner/planner.questions.js'
-import { has, type Profile } from '../profile/profile.model.js'
+import { has, val, type Profile } from '../profile/profile.model.js'
 import type { IntakeForm } from './agent.model.js'
 
-// What the reply promised must be on screen. When the model writes "fill in the questions below" but no valid form
-// came with it, or "here are the options" without searching, the app delivers it itself — whatever the model did.
+// The intake form is the same every time: the same questions, the same budget buckets, the same cities and real
+// business types, "Other" and "Any" last. What the client already said is pre-selected, never asked again. The model
+// only decides when to show it, and only while two or more key facts are missing.
+
+// What the reply promised must be on screen. When the model writes "fill in the questions below" but no form came
+// with it, or "here are the options" without searching, the app delivers it itself — whatever the model did.
 
 // An invitation to fill something in ("შეავსეთ კითხვარი", "fill in the form", "заполните анкету") — not just any
 // mention of questions ("questions to ask the seller" is not a form).
@@ -23,59 +25,80 @@ export function promisesListings(text: string): boolean {
   return !tail.endsWith('?') && PROMISES_LISTINGS.test(tail)
 }
 
-const TITLE = { ka: 'რამდენიმე კითხვა', en: 'A few questions', ru: 'Несколько вопросов' }
-const SUBMIT = { ka: 'გაგრძელება', en: 'Continue', ru: 'Продолжить' }
-const NOTE = { ka: 'კიდევ რამე, რაც მნიშვნელოვანია? (არასავალდებულო)', en: 'Anything else that matters? (optional)', ru: 'Что-то ещё важное? (необязательно)' }
-const ANY = { ka: 'ნებისმიერი', en: 'Any', ru: 'Любой' }
+const t = (ka: string, en: string, ru: string): Localized => ({ ka, en, ru })
 
-// The questions a buyer is asked first, the form field each one fills, and the profile fact that makes it unnecessary.
-const ORDER: { id: QuestionId; field: IntakeForm['questions'][number]['field']; known: (p: Profile) => boolean; value: (patch: Record<string, unknown>) => string }[] = [
-  { id: 'budget', field: 'budget', known: (p) => has(p, 'budgetGel'), value: (x) => String(x.budgetGel) },
-  { id: 'goal', field: 'goal', known: (p) => has(p, 'goal'), value: (x) => String(x.goal) },
-  { id: 'involvement', field: 'involvement', known: (p) => has(p, 'involvement'), value: (x) => String(x.involvement) },
-  { id: 'location', field: 'location', known: (p) => has(p, 'cities') || has(p, 'locationFlexible'), value: () => '' },
-  { id: 'sector', field: 'sector', known: (p) => has(p, 'sectors'), value: () => '' },
-  { id: 'experience', field: 'experience', known: (p) => has(p, 'experience'), value: (x) => String(x.experience) },
-  { id: 'risk', field: 'risk', known: (p) => has(p, 'risk'), value: (x) => String(x.risk) },
+const TITLE = t('რამდენიმე მოკლე კითხვა', 'A few quick questions', 'Несколько коротких вопросов')
+const SUBMIT = t('გაგრძელება', 'Continue', 'Продолжить')
+const NOTE = t('კიდევ რამე, რაც მნიშვნელოვანია? (არასავალდებულო)', 'Anything else that matters? (optional)', 'Что-то ещё важное? (необязательно)')
+
+// The key facts a shortlist needs. Two or more missing → the form; one missing → one question in the text.
+export type KeyFact = 'budget' | 'time' | 'city' | 'type'
+
+export function missingKeyFacts(p: Profile): KeyFact[] {
+  const out: KeyFact[] = []
+  if (!has(p, 'budgetGel')) out.push('budget')
+  if (!has(p, 'involvement') && !has(p, 'goal')) out.push('time')
+  if (!has(p, 'cities') && !has(p, 'locationFlexible')) out.push('city')
+  if (!has(p, 'sectors')) out.push('type')
+  return out
+}
+
+// Budget buckets: the value is the upper bound in GEL (the top bucket stands for "more than 200 000").
+const BUDGET: [number, Localized][] = [
+  [30_000, t('30 000 ₾-მდე', 'Up to 30,000 ₾', 'До 30 000 ₾')],
+  [80_000, t('30 000–80 000 ₾', '30,000–80,000 ₾', '30 000–80 000 ₾')],
+  [200_000, t('80 000–200 000 ₾', '80,000–200,000 ₾', '80 000–200 000 ₾')],
+  [600_000, t('200 000 ₾-ზე მეტი', 'More than 200,000 ₾', 'Более 200 000 ₾')],
 ]
 
-// The most common values on the site right now, for the location and business-type questions.
-function topBy(s: CatalogSnapshot, key: 'city' | 'category', n: number): string[] {
-  const counts = new Map<string, number>()
-  for (const l of s.listings) {
-    const v = l[key]
-    if (v) counts.set(v, (counts.get(v) ?? 0) + 1)
-  }
-  return [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, n).map(([v]) => v)
+export function budgetBucket(gel: number): number {
+  return (BUDGET.find(([top]) => gel <= top) ?? BUDGET[BUDGET.length - 1]!)[0]
 }
 
-// One standard question, with our own options: the budget ranges, the answers for goal, time, experience and risk,
-// and the most common cities and business types on the site right now.
-function questionFor(q: (typeof ORDER)[number], locale: Locale, s: CatalogSnapshot): IntakeForm['questions'][number] | null {
-  const def = questions.find((x) => x.id === q.id)
-  if (!def) return null
-  let options: { value: string; label: string }[]
-  if (q.id === 'location') options = [...topBy(s, 'city', 4).map((c) => ({ value: c, label: cityLabel(c, locale) })), { value: 'any', label: pick(ANY, locale) }]
-  else if (q.id === 'sector') options = [...topBy(s, 'category', 5).map((c) => ({ value: c, label: categoryLabel(c, locale) })), { value: 'any', label: pick(ANY, locale) }]
-  else options = (def.options ?? []).map((o) => ({ value: q.value(o.patch as Record<string, unknown>), label: pick(o.label, locale) }))
-  return options.length >= 2 ? { field: q.field, question: pick(def.ask, locale), options: options.slice(0, 6) } : null
+// The bucket's lower bound, so a stated budget inside the picked bucket is kept as it is (50 000, not 80 000).
+export function bucketFloor(top: number): number {
+  const i = BUDGET.findIndex(([x]) => x === top)
+  return i > 0 ? BUDGET[i - 1]![0] : 0
 }
 
-// The standard version of one form field, so every form offers the same budget ranges and a real list of business
-// types (the model's own options vary from run to run).
-export function standardQuestion(field: 'budget' | 'sector', locale: Locale, s: CatalogSnapshot): IntakeForm['questions'][number] | null {
-  const q = ORDER.find((x) => x.field === field)
-  return q ? questionFor(q, locale, s) : null
-}
+const CITIES: [string, Localized][] = [
+  ['Tbilisi', t('თბილისი', 'Tbilisi', 'Тбилиси')],
+  ['Batumi', t('ბათუმი', 'Batumi', 'Батуми')],
+  ['Kutaisi', t('ქუთაისი', 'Kutaisi', 'Кутаиси')],
+  ['Rustavi', t('რუსთავი', 'Rustavi', 'Рустави')],
+  ['other', t('სხვა ქალაქი', 'Another city', 'Другой город')],
+  ['any', t('ნებისმიერი', 'Any', 'Любой')],
+]
 
-// The intake form for what the profile still lacks, built without a model. null when nothing is missing.
-export function defaultIntakeForm(profile: Profile, locale: Locale, s: CatalogSnapshot): IntakeForm | null {
-  const out: IntakeForm['questions'] = []
-  for (const q of ORDER) {
-    if (q.known(profile)) continue
-    const question = questionFor(q, locale, s)
-    if (question) out.push(question)
-    if (out.length === 5) break
-  }
-  return out.length ? { title: pick(TITLE, locale), questions: out, noteLabel: pick(NOTE, locale), submitLabel: pick(SUBMIT, locale) } : null
+// Real business types. A value can stand for several categories of the site ("retail,supermarket,…").
+export const SECTOR_OPTIONS: [string, Localized][] = [
+  ['restaurants,bar_nightclub', t('კაფე / რესტორანი', 'Café / restaurant', 'Кафе / ресторан')],
+  ['bakery', t('საცხობი / საკონდიტრო', 'Bakery / pastry', 'Пекарня / кондитерская')],
+  ['beauty_sport,spa', t('სილამაზის სალონი', 'Beauty salon', 'Салон красоты')],
+  ['retail,supermarket,clothing_store', t('მაღაზია', 'Shop', 'Магазин')],
+  ['car_wash,car_service', t('ავტოსამრეცხაო / სერვისი', 'Car wash / service', 'Автомойка / сервис')],
+  ['services,cleaning,printing', t('მომსახურება', 'Services', 'Услуги')],
+  ['commercial_space', t('კომერციული ფართი', 'Commercial space', 'Коммерческая площадь')],
+  ['other', t('სხვა', 'Other', 'Другое')],
+  ['any', t('ნებისმიერი', 'Any', 'Любой')],
+]
+
+const ask = (id: QuestionId, locale: Locale) => pick(questions.find((q) => q.id === id)!.ask, locale)
+const fixed = (id: QuestionId, locale: Locale) => (questions.find((q) => q.id === id)?.options ?? []).map((o) => ({ value: String(Object.values(o.patch)[0]), label: pick(o.label, locale) }))
+
+// The standard form, with what the profile already holds pre-selected.
+export function standardForm(p: Profile, locale: Locale): IntakeForm {
+  const budget = val(p, 'budgetGel')
+  const cities = val(p, 'cities')
+  const sectors = val(p, 'sectors')
+  const sectorValue = sectors === undefined ? undefined : sectors.length === 0 ? 'any' : SECTOR_OPTIONS.find(([v]) => v.split(',').includes(sectors[0]!))?.[0]
+  const cityValue = val(p, 'locationFlexible') === true ? 'any' : cities?.length ? (CITIES.find(([c]) => c === cities[0])?.[0] ?? 'other') : undefined
+  const qs: IntakeForm['questions'] = [
+    { field: 'budget', question: ask('budget', locale), options: BUDGET.map(([v, l]) => ({ value: String(v), label: pick(l, locale) })), selected: budget ? String(budgetBucket(budget)) : undefined },
+    { field: 'goal', question: ask('goal', locale), options: fixed('goal', locale), selected: val(p, 'goal') },
+    { field: 'involvement', question: ask('involvement', locale), options: fixed('involvement', locale), selected: val(p, 'involvement') },
+    { field: 'location', question: ask('location', locale), options: CITIES.map(([v, l]) => ({ value: v, label: pick(l, locale) })), selected: cityValue },
+    { field: 'sector', question: ask('sector', locale), options: SECTOR_OPTIONS.map(([v, l]) => ({ value: v, label: pick(l, locale) })), selected: sectorValue },
+  ]
+  return { title: pick(TITLE, locale), questions: qs, noteLabel: pick(NOTE, locale), submitLabel: pick(SUBMIT, locale) }
 }

@@ -16,11 +16,18 @@ let script: ((params: Step, n: number) => AsyncGenerator<{ type: 'text'; text: s
 let calls = 0
 
 const saved = { ...chatRepository }
-const stored: { role: string; content: string }[] = []
+const stored: { role: string; content: string; payload?: Record<string, unknown> }[] = []
 let earlier: Awaited<ReturnType<typeof chatRepository.earlierForUser>> = []
 
 before(() => {
-  chatRepository.addMessage = async (_id, m) => stored.push(m)
+  chatRepository.addMessage = async (_id, m) => stored.push({ ...m })
+  chatRepository.updateMessage = async (_id, id, m) => {
+    const x = stored[id - 1]
+    if (!x) return
+    if (m.content !== undefined) x.content = m.content
+    if (m.payload !== undefined) x.payload = m.payload
+  }
+  chatRepository.deleteMessage = async () => {}
   chatRepository.recentMessages = async () => []
   chatRepository.saveSession = async () => {}
   chatRepository.earlierForUser = async () => earlier
@@ -34,11 +41,11 @@ after(() => {
   ai.agentStep = original
 })
 
-async function run(text: string, model?: string) {
-  const session: Session = { id: '00000000-0000-4000-8000-000000000001', userId: 'test-user', title: null, locale: 'ka', profile: {}, state: sessionStateSchema.parse({}), turnCount: 0, expiresAt: new Date() }
+async function run(text: string, model?: string, opts: { profile?: Session['profile']; signal?: AbortSignal; input?: Parameters<typeof agentTurn>[0]['input'] } = {}) {
+  const session: Session = { id: '00000000-0000-4000-8000-000000000001', userId: 'test-user', title: null, locale: 'ka', profile: opts.profile ?? {}, state: sessionStateSchema.parse({}), turnCount: 0, expiresAt: new Date() }
   const events: { event: string; data: unknown }[] = []
   calls = 0
-  await agentTurn({ session, input: { text, model }, emit: async (event, data) => void events.push({ event, data }), signal: new AbortController().signal })
+  await agentTurn({ session, input: opts.input ?? { text, model }, emit: async (event, data) => void events.push({ event, data }), signal: opts.signal ?? new AbortController().signal })
   const tokens = events.filter((e) => e.event === 'token').map((e) => (e.data as { text: string }).text).join('')
   return { events, tokens, of: (name: string) => events.filter((e) => e.event === name).map((e) => e.data) }
 }
@@ -50,7 +57,7 @@ test('tool calls run, their results reach the next step, and the form/profile ev
     if (n === 1) {
       yield { type: 'text', text: 'ჯერ რამდენიმე კითხვა.' }
       const c1 = { name: 'update_profile', args: { budget_gel: 50000, involvement: 'part_time' } }
-      const c2 = { name: 'show_form', args: { questions: [{ field: 'goal', question: 'რა არის მიზანი?', options: [{ value: 'passive_income', label: 'შემოსავალი' }, { value: 'own_job', label: 'ჩემი საქმე' }] }], submit_label: 'გაგრძელება' } }
+      const c2 = { name: 'show_form', args: {} }
       yield { type: 'done', model: 'stub', parts: [{ text: 'ჯერ რამდენიმე კითხვა.' }, { functionCall: c1 }, { functionCall: c2 }], calls: [c1, c2] }
       return
     }
@@ -60,8 +67,9 @@ test('tool calls run, their results reach the next step, and the form/profile ev
   const r = await run('მინდა ბიზნესის ყიდვა, არ ვიცი რომელი')
   assert.equal(calls, 2, 'a step with a non-terminal tool continues; the text-only step ends it')
   assert.equal(r.tokens, 'ჯერ რამდენიმე კითხვა.\n\nშეავსეთ და გავაგრძელოთ.')
-  const form = r.of('form')[0] as { questions: { field: string }[]; submitLabel: string }
-  assert.deepEqual(form.questions.map((q) => q.field), ['goal', 'sector'], 'the kind of business is asked when still unknown')
+  const form = r.of('form')[0] as { questions: { field: string; selected?: string }[]; submitLabel: string }
+  assert.deepEqual(form.questions.map((q) => q.field), ['budget', 'goal', 'involvement', 'location', 'sector'], 'always the standard form')
+  assert.deepEqual(form.questions.map((q) => q.selected), ['80000', undefined, 'part_time', undefined, undefined], 'what the client said is pre-selected')
   const profile = r.of('profile')[0] as { items: { key: string; value: string }[] }
   assert.ok(profile.items.some((i) => i.key === 'budgetGel' && i.value.includes('50')), 'update_profile applied the budget')
   assert.ok(profile.items.some((i) => i.key === 'involvement'))
@@ -105,7 +113,7 @@ test('chips called before any text: the model gets the result and writes its rep
 
 test('a form with no words still gets an intro line, so the history has no empty answer', async () => {
   script = async function* () {
-    const c = { name: 'show_form', args: { questions: [{ field: 'goal', question: 'მიზანი?', options: [{ value: 'growth', label: 'ზრდა' }, { value: 'own_job', label: 'საქმე' }] }], submit_label: 'OK' } }
+    const c = { name: 'show_form', args: {} }
     yield { type: 'done', model: 'stub', parts: [{ functionCall: c }], calls: [c] }
   }
   const r = await run('დამეხმარე არჩევაში')
@@ -113,23 +121,14 @@ test('a form with no words still gets an intro line, so the history has no empty
   assert.equal(r.of('form').length, 1)
 })
 
-test('a business type named in the message is not asked again in the form', async () => {
+test('a business type named in the message is pre-selected in the form, not asked again', async () => {
   script = async function* () {
-    const c = {
-      name: 'show_form',
-      args: {
-        questions: [
-          { field: 'goal', question: 'მიზანი?', options: [{ value: 'growth', label: 'ზრდა' }, { value: 'own_job', label: 'საქმე' }] },
-          { field: 'sector', question: 'რა სფერო?', options: [{ value: 'land', label: 'მიწა' }, { value: 'restaurants', label: 'რესტორანი' }] },
-        ],
-        submit_label: 'OK',
-      },
-    }
+    const c = { name: 'show_form', args: {} }
     yield { type: 'done', model: 'stub', parts: [{ text: 'რამდენიმე კითხვა.' }, { functionCall: c }], calls: [c] }
   }
-  const r = await run('5000 ლარი მაქვს და რესტორანი მინდა ვიყიდო')
-  const form = r.of('form')[0] as { questions: { field: string }[] }
-  assert.deepEqual(form.questions.map((q) => q.field), ['goal'])
+  const r = await run('რესტორანი მინდა ვიყიდო, დამეხმარეთ')
+  const form = r.of('form')[0] as { questions: { field: string; selected?: string }[] }
+  assert.equal(form.questions.find((q) => q.field === 'sector')?.selected, 'restaurants,bar_nightclub')
 })
 
 test('the last step offers only chips, so a model that keeps calling tools still produces an answer', async () => {
@@ -186,35 +185,90 @@ test('a reply that ends with a real question is not treated as an unfinished act
   assert.equal(announcesAction('აი სამი ვარიანტი თქვენთვის.'), false)
 })
 
-test('a form the model announced but got wrong does not end the turn: the model gets the error and asks again', async () => {
+test('the form is refused when only one key fact is missing: the model asks that one thing in text', async () => {
   script = async function* (_params, n) {
     if (n === 1) {
-      const text = 'შეგიძლია პირდაპირ ქვემოთ მოცემული ფორმა შეავსო:'
-      yield { type: 'text', text }
-      // Wrong field names and no options: nothing the UI can show.
-      const c = { name: 'show_form', args: { questions: [{ field: 'budget_in_lari', question: 'ბიუჯეტი?' }], submit_label: 'OK' } }
-      yield { type: 'done', model: 'stub', parts: [{ text }, { functionCall: c }], calls: [c] }
+      const c = { name: 'show_form', args: {} }
+      yield { type: 'done', model: 'stub', parts: [{ functionCall: c }], calls: [c] }
       return
     }
-    const c = {
-      name: 'show_form',
-      args: {
-        questions: [
-          { field: 'budget', question: 'ბიუჯეტი?', options: [{ label: '50 000 ₾-მდე' }, { label: '50 000–150 000 ₾' }] },
-          { field: 'experience', question: 'გამოცდილება?', options: [{ label: 'არ მაქვს' }, { label: 'მაქვს' }] },
-        ],
-        submit_label: 'OK',
-      },
-    }
-    yield { type: 'done', model: 'stub', parts: [{ functionCall: c }], calls: [c] }
+    yield { type: 'text', text: 'რა ტიპის ბიზნესი გაინტერესებთ?' }
+    yield { type: 'done', model: 'stub', parts: [{ text: 'რა ტიპის ბიზნესი გაინტერესებთ?' }], calls: [] }
   }
-  const r = await run('რა ინფორმაცია გჭირდება?')
-  assert.equal(calls, 2, 'the failed form is not accepted as the end of the turn')
-  const form = r.of('form')[0] as { questions: { field: string; question: string; options: { value: string }[] }[] }
-  assert.deepEqual(form.questions.map((q) => q.field), ['budget', 'experience', 'sector'])
-  assert.equal(form.questions[0]?.question, 'ბიუჯეტი?', 'the model’s wording stays')
-  assert.deepEqual(form.questions[0]?.options.map((o) => o.value), ['30000', '80000', '200000', '600000'], 'every form offers the same budget ranges')
-  assert.equal(form.questions[1]?.options[0]?.value, 'არ მაქვს', 'an option with only a label gets it as its value too')
+  const known = <T>(value: T) => ({ value, status: 'known' as const, turn: 1 })
+  const r = await run('დამეხმარეთ', undefined, { profile: { budgetGel: known(50000), involvement: known('part_time' as const), cities: known(['Tbilisi']) } })
+  assert.equal(calls, 2, 'the refusal goes back to the model')
+  assert.equal(r.of('form').length, 0)
+  assert.equal(r.tokens, 'რა ტიპის ბიზნესი გაინტერესებთ?')
+})
+
+test('an answer cut at the length limit is carried on; cut too often, it is saved as unfinished', async () => {
+  stored.length = 0
+  script = async function* (_params, n) {
+    yield { type: 'text', text: `ნაწილი ${n} ` }
+    yield { type: 'done', model: 'stub', parts: [{ text: `ნაწილი ${n} ` }], calls: [], cut: 'length' } as never
+  }
+  const r = await run('შეადარე ყველა')
+  assert.equal(calls, 3, 'two continuations, then it stops')
+  assert.equal(r.tokens, 'ნაწილი 1 ნაწილი 2 ნაწილი 3 ', 'continuations join the same sentence')
+  assert.equal((r.of('done')[0] as { incomplete?: boolean }).incomplete, true)
+  const answer = stored.at(-1)!
+  assert.equal(answer.role, 'assistant')
+  assert.equal(answer.payload?.incomplete, true, 'saved as unfinished, so the client can continue it')
+  assert.equal(stored[0]!.role, 'user', 'the client’s message was saved first')
+})
+
+test('a stream that went quiet is continued instead of being saved as a finished answer', async () => {
+  script = async function* (params, n) {
+    if (n === 1) {
+      yield { type: 'text', text: 'პირველი ნახევარი, ' }
+      yield { type: 'done', model: 'stub', parts: [{ text: 'პირველი ნახევარი, ' }], calls: [], cut: 'stalled' } as never
+      return
+    }
+    assert.match(String(params.contents.at(-1)?.parts?.[0]?.text), /cut off/)
+    yield { type: 'text', text: 'მეორე ნახევარი.' }
+    yield { type: 'done', model: 'stub', parts: [{ text: 'მეორე ნახევარი.' }], calls: [] }
+  }
+  const r = await run('რისკები?')
+  assert.equal(r.tokens, 'პირველი ნახევარი, მეორე ნახევარი.')
+  assert.equal((r.of('done')[0] as { incomplete?: boolean }).incomplete, undefined)
+})
+
+test('the client leaves mid-answer: what was written is kept as unfinished, nothing more is sent', async () => {
+  stored.length = 0
+  const leave = new AbortController()
+  script = async function* () {
+    yield { type: 'text', text: 'ნახევრად დაწერილი' }
+    leave.abort()
+    yield { type: 'done', model: 'stub', parts: [{ text: 'ნახევრად დაწერილი' }], calls: [] }
+  }
+  const r = await run('რა ღირს?', undefined, { signal: leave.signal })
+  assert.equal(r.of('done').length, 0)
+  assert.deepEqual([stored.at(-1)?.role, stored.at(-1)?.content, stored.at(-1)?.payload?.incomplete], ['assistant', 'ნახევრად დაწერილი', true])
+})
+
+test('continue: the unfinished answer is carried on in the same message', async () => {
+  stored.length = 0
+  stored.push({ role: 'user', content: 'შეადარე' }, { role: 'assistant', content: 'პირველი ვარიანტი უკეთესია, რად', payload: { incomplete: true, cards: [] } })
+  const recent = chatRepository.recentMessages
+  chatRepository.recentMessages = async () => stored.map((m, i) => ({ id: i + 1, role: m.role as 'user' | 'assistant', content: m.content, intent: 'chat', payload: m.payload ?? {}, createdAt: '' }))
+  try {
+    let seen: Step | undefined
+    script = async function* (params) {
+      seen = params
+      yield { type: 'text', text: 'გან ქირა დაბალია.' }
+      yield { type: 'done', model: 'stub', parts: [{ text: 'გან ქირა დაბალია.' }], calls: [] }
+    }
+    const r = await run('', undefined, { input: { action: 'continue' } })
+    assert.equal(seen?.contents.at(-2)?.parts?.[0]?.text, 'პირველი ვარიანტი უკეთესია, რად', 'the model sees exactly where it stopped')
+    assert.equal(r.tokens, 'გან ქირა დაბალია.')
+    assert.deepEqual(r.of('done')[0], { messageId: 2, model: 'stub', incomplete: undefined, continued: true })
+    assert.equal(stored[1]!.content, 'პირველი ვარიანტი უკეთესია, რადგან ქირა დაბალია.')
+    assert.equal(stored[1]!.payload?.incomplete, undefined)
+    assert.equal(stored.length, 2, 'no new message')
+  } finally {
+    chatRepository.recentMessages = recent
+  }
 })
 
 test('the screenshot case: "შეავსოთ მოკლე კითხვარი" with no form at all → the app shows the form itself', async () => {
@@ -274,8 +328,8 @@ test('a turn that fails keeps the message as unanswered; the retry replaces it i
   stored.length = 0
   script = null // no model answers
   await assert.rejects(run('კომერციულ ფართს ვეძებ ვაკეში'))
-  const failed = stored.at(-1) as { role: string; content: string; payload?: { failed?: boolean } }
-  assert.deepEqual([failed.role, failed.content, failed.payload?.failed], ['user', 'კომერციულ ფართს ვეძებ ვაკეში', true])
+  const failed = stored.at(-1)!
+  assert.deepEqual([failed.role, failed.content, failed.payload?.failed], ['user', 'კომერციულ ფართს ვეძებ ვაკეში', true], 'saved first, then marked unanswered')
 
   const deleted: number[] = []
   const recent = chatRepository.recentMessages

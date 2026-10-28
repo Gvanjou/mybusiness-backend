@@ -108,6 +108,15 @@ export const chatRepository = {
     return Number(data.id)
   },
 
+  // Rewrites a stored message: an answer that was continued, or a message of the client's left unanswered.
+  async updateMessage(sessionId: string, id: number, m: { content?: string; payload?: Record<string, unknown> }): Promise<void> {
+    const patch: Record<string, unknown> = {}
+    if (m.content !== undefined) patch.content = m.content
+    if (m.payload !== undefined) patch.payload = m.payload
+    const { error } = await db.from('chat_messages').update(patch).eq('id', id).eq('session_id', sessionId)
+    if (error) throw error
+  },
+
   async deleteMessage(sessionId: string, id: number): Promise<void> {
     const { error } = await db.from('chat_messages').delete().eq('id', id).eq('session_id', sessionId)
     if (error) throw error
