@@ -1,7 +1,7 @@
 import { db } from '../../pkg/supabase/supabase.js'
 import { logger, errorFields } from '../../shared/logger/logger.js'
 import { sleep } from '../../shared/utils/async.js'
-import { limitFor } from './ai.models.js'
+import { KEY_ID, limitFor } from './ai.models.js'
 
 type ModelState = {
   minute: number[] // request timestamps within the last 60 s
@@ -66,17 +66,14 @@ function get(model: string): ModelState {
 
 export const quota = {
   // Restore today's counters after a restart so the daily budget is not exceeded.
+  // Today's answered requests made with the current key, so a restart keeps the figure and a new key starts at zero.
   async load(): Promise<void> {
-    const { data, error } = await db.rpc('llm_usage_today')
+    const { data, error } = await db.from('llm_usage').select('model').eq('outcome', 'ok').eq('key_id', KEY_ID).gte('created_at', resetTime(-1).toISOString())
     if (error) {
-      logger.warn('quota.load failed; starting from zero', errorFields(error))
+      logger.warn('quota.load: usage log unavailable (run migration 014?); starting from zero', errorFields(error))
       return
     }
-    for (const row of (data ?? []) as { model: string; requests: number }[]) get(row.model).day = Number(row.requests)
-    // Answered requests since the reset, for the shared usage figure.
-    const { data: ok, error: okError } = await db.from('llm_usage').select('model').eq('outcome', 'ok').gte('created_at', resetTime(-1).toISOString())
-    if (okError) logger.warn('quota.load: answered requests unavailable', errorFields(okError))
-    for (const row of ok ?? []) get(String(row.model)).ok++
+    for (const row of data ?? []) get(String(row.model)).ok++
   },
 
   // For the model picker: used up today (limit), recently busy or slow (busy), or ready (available).

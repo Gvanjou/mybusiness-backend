@@ -4,7 +4,7 @@ import { gemini } from '../../pkg/gemini/gemini.js'
 import { db } from '../../pkg/supabase/supabase.js'
 import { logger, errorFields } from '../../shared/logger/logger.js'
 import { sleep } from '../../shared/utils/async.js'
-import { EMBEDDING_DIMENSIONS, modelChains, thinkingByTask, type AiTask } from './ai.models.js'
+import { EMBEDDING_DIMENSIONS, KEY_ID, modelChains, thinkingByTask, type AiTask } from './ai.models.js'
 import { quota } from './ai.quota.js'
 
 export class AiUnavailableError extends Error {
@@ -33,18 +33,21 @@ const STREAM_IDLE_TIMEOUT_MS = 15_000
 const JOB_QUOTA_SHARE = 0.5
 
 function logUsage(task: AiTask, model: string, outcome: Outcome, started: number, meta: CallMeta, usage?: { promptTokenCount?: number; candidatesTokenCount?: number }) {
+  const row = {
+    task,
+    model,
+    outcome,
+    input_tokens: usage?.promptTokenCount ?? null,
+    output_tokens: usage?.candidatesTokenCount ?? null,
+    latency_ms: Date.now() - started,
+    session_id: meta.sessionId ?? null,
+  }
   void db
     .from('llm_usage')
-    .insert({
-      task,
-      model,
-      outcome,
-      input_tokens: usage?.promptTokenCount ?? null,
-      output_tokens: usage?.candidatesTokenCount ?? null,
-      latency_ms: Date.now() - started,
-      session_id: meta.sessionId ?? null,
-    })
-    .then(({ error }) => {
+    .insert({ ...row, key_id: KEY_ID })
+    .then(async ({ error }) => {
+      // Before migration 014 the column is missing: keep logging without it.
+      if (error && /key_id/.test(error.message)) ({ error } = await db.from('llm_usage').insert(row))
       if (error) logger.warn('llm_usage insert failed', errorFields(error))
     })
 }

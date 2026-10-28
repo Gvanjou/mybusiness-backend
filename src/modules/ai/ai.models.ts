@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { ThinkingLevel } from '@google/genai'
 import { env } from '../../pkg/env/env.js'
 
@@ -78,3 +79,7 @@ export function limitFor(model: string): ModelLimit {
 }
 
 export const EMBEDDING_DIMENSIONS = 768
+
+// Which Gemini key the usage log belongs to: a short hash, never the key. Quotas belong to the key's Google project,
+// so a new key starts from zero.
+export const KEY_ID = createHash('sha256').update(env.GEMINI_API_KEY).digest('hex').slice(0, 12)
