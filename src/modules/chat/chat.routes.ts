@@ -5,7 +5,7 @@ import { env } from '../../pkg/env/env.js'
 import { AppError } from '../../shared/http/app-error.js'
 import { sameOrigin } from '../../shared/http/origin.js'
 import { RateLimiter } from '../../shared/http/rate-limit.js'
-import { pick } from '../../shared/i18n/locale.js'
+import { localeSchema, pick } from '../../shared/i18n/locale.js'
 import { logger, errorFields } from '../../shared/logger/logger.js'
 import { AiUnavailableError } from '../ai/ai.gateway.js'
 import { chatModels, MODEL_INFO, modelChains } from '../ai/ai.models.js'
@@ -20,6 +20,7 @@ import { applyPatch } from './profile/profile.merge.js'
 import { agentTurn } from './agent/agent.service.js'
 import { cardFor } from './agent/agent.facts.js'
 import { AUDIO_TYPES, MAX_AUDIO_BYTES, MIN_AUDIO_BYTES, transcribe } from './voice/voice.service.js'
+import { callTool, isSlowTool, saveTurn, startCall } from './voice/voice.live.js'
 import { createSessionSchema, feedbackSchema, sendMessageSchema, sessionStateSchema } from './chat.model.js'
 import { chatRepository, type Session } from './chat.repository.js'
 import { profileItems, entryQuickReplies, texts } from './templates/templates.js'
@@ -30,6 +31,8 @@ const messagesPerSession = new RateLimiter(env.CHAT_MESSAGES_PER_MINUTE, 60_000)
 const messagesPerUser = new RateLimiter(env.CHAT_MESSAGES_PER_DAY, 24 * 60 * 60_000)
 const inFlight = new Set<string>()
 const voicePerSession = new RateLimiter(6, 60_000)
+const callsPerUser = new RateLimiter(10, 60 * 60_000)
+const voiceToolBusy = new Set<string>() // one tool at a time per chat: they change its state
 const PING_MS = 5_000
 
 const profileEditSchema = z.object({
@@ -87,6 +90,7 @@ export const chatRoutes = new Hono()
     return c.json({
       models: modelChains.responder.map((id) => ({ id, name: MODEL_INFO[id]?.name ?? id, tier: MODEL_INFO[id]?.tier ?? 'flash', ...quota.status(id) })),
       resetsAt: quota.usage(chatModels()).resetsAt,
+      voice: env.VOICE_ENABLED, // the UI shows the call button only then
     })
   })
 
@@ -175,6 +179,38 @@ export const chatRoutes = new Hono()
       }
     },
   )
+
+  // Voice calls (Gemini Live, behind VOICE_ENABLED). A locked one-time token for the browser's audio connection to
+  // Google; the model's tool calls come back here; each finished exchange is saved as two chat messages.
+  .post('/voice/session', limit, async (c) => {
+    if (!env.VOICE_ENABLED) throw new AppError('not_found', 'Not found')
+    const { user, session } = await requireConversation(c)
+    const { locale } = await json(c, (b) => z.object({ locale: localeSchema.optional() }).parse(b ?? {}))
+    callsPerUser.hit(user.id)
+    return c.json(await startCall(session, user.id, locale ?? session.locale), 201)
+  })
+
+  .post('/voice/tool', limit, async (c) => {
+    if (!env.VOICE_ENABLED) throw new AppError('not_found', 'Not found')
+    const { session } = await requireConversation(c)
+    const { name, args } = await json(c, (b) => z.object({ name: z.string().max(60), args: z.record(z.string(), z.unknown()).default({}) }).parse(b))
+    if (voiceToolBusy.has(session.id)) throw new AppError('rate_limited', 'Another tool is still running.', 1)
+    voiceToolBusy.add(session.id)
+    try {
+      return c.json({ ...(await callTool(session, name, args)), slow: isSlowTool(name) })
+    } finally {
+      voiceToolBusy.delete(session.id)
+    }
+  })
+
+  .post('/voice/turn', limit, async (c) => {
+    if (!env.VOICE_ENABLED) throw new AppError('not_found', 'Not found')
+    const { user, session } = await requireConversation(c)
+    const body = await json(c, (b) => z.object({ userText: z.string().max(4_000).default(''), assistantText: z.string().max(8_000).default(''), ended: z.boolean().default(false), userSeconds: z.number().int().min(0).max(3_600).optional(), interrupted: z.boolean().optional(), locale: localeSchema.optional() }).parse(b))
+    if (body.userText.trim() || body.assistantText.trim()) messagesPerUser.hit(user.id)
+    await saveTurn(session, body.userText.trim(), body.assistantText.trim(), body.ended, { userSeconds: body.userSeconds, interrupted: body.interrupted, locale: body.locale })
+    return c.body(null, 204)
+  })
 
   .post('/feedback', limit, async (c) => {
     const { session } = await requireConversation(c)

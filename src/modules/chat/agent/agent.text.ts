@@ -131,8 +131,15 @@ export function createRepeatCheck(before: string) {
       if (held === null) return chunk
       held += chunk
       const end = held.match(/[.!?…]\s|\n| — /)
-      if (!end && held.length < 240) return ''
-      const cut = end ? end.index! + end[0].length : held.length
+      if (!end) {
+        // No sentence end within 240 characters: nothing can be judged a repeat, and cutting at a chunk boundary
+        // once lost the start of a word ("ცხადებაში" for "განცხადებაში"). Everything passes through.
+        if (held.length < 240) return ''
+        const all = held
+        held = null
+        return all
+      }
+      const cut = end.index! + end[0].length
       const first = decide(held.slice(0, cut))
       const rest = held.slice(cut)
       held = null

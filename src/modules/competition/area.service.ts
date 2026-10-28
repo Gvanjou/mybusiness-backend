@@ -162,7 +162,10 @@ async function mapFacts(at: Located, businessType: string | null, forSpace: bool
   if (!map) return null
   const within = (m: number) => map.places.filter((p) => p.distanceM <= m)
   // Names in the reply's language when the map has them (Georgian answers never get "Friend's park").
-  const nameOf = (p: MapPlace) => (locale === 'ka' ? p.nameKa || (/[ა-ჰ]/.test(p.name) ? p.name : '') || p.name : locale === 'en' ? p.nameEn || p.name : p.name) || p.nameEn || '(no name on the map)'
+  // A Georgian answer gets Georgian names only; a place with no usable name is counted but never listed (the model
+  // used to translate a placeholder into "უსახელო").
+  const nameOf = (p: MapPlace): string => (locale === 'ka' ? p.nameKa || (/[ა-ჰ]/.test(p.name) ? p.name : '') : locale === 'en' ? p.nameEn || p.name : p.name || p.nameEn) || ''
+  const hasName = (p: MapPlace) => nameOf(p) !== ''
   const named = (p: MapPlace) => ({ name: nameOf(p), type: p.sub || p.cls, distance_m: p.distanceM })
   const isActivity = (p: MapPlace) => !NOT_ACTIVITY.has(p.cls) && !NOT_ACTIVITY.has(`${p.cls}/${p.sub}`)
   const near300 = within(300).filter(isActivity).length
@@ -179,7 +182,7 @@ async function mapFacts(at: Located, businessType: string | null, forSpace: bool
       radius_m: radius,
       direct_competitors: { within_150m: direct.filter((p) => p.distanceM <= 150).length, within_radius: inRadius.length, within_1km: direct.filter((p) => p.distanceM <= 1_000).length },
       level_by_count: level,
-      nearest_direct: inRadius.slice(0, 10).map(named),
+      nearest_direct: inRadius.filter(hasName).slice(0, 10).map(named),
       related_within_radius: count(rivals.related, within(radius)),
     }
   }

@@ -43,17 +43,20 @@ test('profit_scenarios: three scenarios with the same cost lines, computed in co
   )) as { scenarios: { scenario: string; revenue_monthly_gel: number; fixed_costs_gel: number; net_profit_monthly_gel: number; payback_months: number | null }[]; warnings: string[] }
   assert.deepEqual(r.scenarios.map((x) => x.scenario), ['cautious', 'realistic', 'optimistic'])
   assert.deepEqual(r.scenarios.map((x) => x.revenue_monthly_gel), [20000, 25000, 30000], 'sorted, cautious lowest')
-  assert.ok(r.scenarios.every((x) => x.fixed_costs_gel === 9800), 'the same fixed costs in every scenario')
-  // 20 000 − 35% (7 000) − 1% (200) − 9 800 = 3 000
-  assert.equal(r.scenarios[0]!.net_profit_monthly_gel, 3000)
-  assert.equal(r.scenarios[0]!.payback_months, 20)
+  // Rent 3 000 + staff 6 000 + utilities 800 as given, and the other costs the model left out at their usual 400.
+  assert.ok(r.scenarios.every((x) => x.fixed_costs_gel === 10200), 'the same fixed costs in every scenario')
+  // 20 000 − 35% (7 000) − 1% (200) − 10 200 = 2 600
+  assert.equal(r.scenarios[0]!.net_profit_monthly_gel, 2600)
+  assert.equal(r.scenarios[0]!.payback_months, 23)
   const table = c.out.compare as CompareTable
   assert.equal(table.kind, 'profit')
   assert.ok(table.rows.some((row) => row.key === 'staff') && table.rows.some((row) => row.key === 'payback'))
+  assert.match(table.rows.find((row) => row.key === 'other')!.label, /ტიპური/, 'a usual figure says so')
+  assert.match(table.rows.find((row) => row.key === 'owner_salary')!.label, /თქვენი შრომა/, "the owner's own work is shown as not counted")
 
   const tooGood = (await runTool('profit_scenarios', { price_gel: 15000, revenue_monthly_gel: [20000, 25000, 30000] }, ctx())) as { warnings: string[] }
   assert.ok(tooGood.warnings.some((w) => /under 6 months/.test(w)), 'a payback under 6 months is flagged')
-  assert.ok(tooGood.warnings.some((w) => /owner works for free/.test(w)), 'no staff costs is called out')
+  assert.ok(tooGood.warnings.some((w) => /Usual figures were used for staff/.test(w)), 'staff left out: the usual figure is used and called an assumption')
   const missing = (await runTool('profit_scenarios', { price_gel: 15000, revenue_monthly_gel: [20000] }, ctx())) as { error?: string }
   assert.ok(missing.error, 'three revenues are needed')
 })

@@ -158,7 +158,8 @@ const stems: [string, string[]][] = Object.entries(categories)
   .map(([key, l]) => [
     key,
     [l.ka, l.en, l.ru]
-      .flatMap((x) => x.toLowerCase().split(/\s*\/\s*/))
+      // "სილამაზე და სპორტი", "Beauty & sport": each part is a type of its own ("სილამაზის სალონი" is beauty).
+      .flatMap((x) => x.toLowerCase().split(/\s*[/&]\s*|\s+(?:და|and|и)\s+/))
       .map((x) => plain(x.replace(/[აეიოუaeiouyаеиоуыяю]+$/u, '')))
       .filter((x) => x.length >= (/^[a-z]/.test(x) ? 4 : 3)), // "bar" would match "bargain"
   ])

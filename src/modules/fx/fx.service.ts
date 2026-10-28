@@ -56,3 +56,10 @@ export function toGel(amount: number | null | undefined, currency: string | null
   const rate = rates[(currency ?? 'GEL').toUpperCase()]
   return rate ? amount * rate : null
 }
+
+// A converted amount, rounded so a daily change of the rate does not show (production test: one listing at 52 000,
+// 51 920 and 51 914 ₾ in one evening): to 1 000 from 10 000 up, to 100 from 1 000, else to 10.
+export function approx(amount: number): number {
+  const step = amount >= 10_000 ? 1_000 : amount >= 1_000 ? 100 : 10
+  return Math.round(amount / step) * step
+}

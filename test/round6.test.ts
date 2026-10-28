@@ -57,11 +57,75 @@ test('a payback under 6 months is called unusually fast in the profit table itse
     const payback = ctx.out.compare!.rows.find((r) => r.key === 'payback')!.values
     assert.match(payback.at(-1)!, /თვე — უჩვეულოდ სწრაფია, გადაამოწმეთ შემოსავალი$/)
     assert.doesNotMatch(payback[0]!, /სწრაფია/)
+    // 5.5 months reads "5.5 თვე" and is still under six (it used to round to 6 and pass unflagged).
+    const half = ctxOf()
+    await runTool('profit_scenarios', { ref: '#2', revenue_monthly_gel: [10000, 20000, 30000], cost_of_goods_pct: 0, staff_monthly_gel: 0, utilities_monthly_gel: 0, other_monthly_gel: 0, tax_pct_of_revenue: 0, price_gel: 55000 }, half)
+    // revenue 10 000, no costs: profit 10 000 → price 55 000 / 10 000 = 5.5
+    const row = half.out.compare!.rows.find((r) => r.key === 'payback')!
+    assert.match(row.values[0]!, /^5\.5 თვე — უჩვეულოდ/)
     // No cost of goods given for a bakery: its usual share is used, and the table says so.
     assert.match(ctx.out.compare!.rows.find((r) => r.key === 'cogs')!.label, /35%, ტიპური/)
+    // Production test, 29 Oct: the whole cost template, every line in every table, whatever the model passed.
+    const keys = ctx.out.compare!.rows.map((r) => r.key)
+    for (const key of ['revenue', 'cogs', 'rent', 'staff', 'owner_salary', 'utilities', 'other', 'tax', 'profit', 'payback']) assert.ok(keys.includes(key), key)
+    assert.match(ctx.out.compare!.rows.find((r) => r.key === 'rent')!.label, /არ არის მითითებული/)
+    // A buyer who wants passive income pays a manager.
+    const passive = ctxOf({ goal: known('passive_income') })
+    await runTool('profit_scenarios', { ref: '#2', revenue_monthly_gel: [6000, 12000, 40000] }, passive)
+    const manager = passive.out.compare!.rows.find((r) => r.key === 'owner_salary')!
+    assert.match(manager.label, /მენეჯერის ხელფასი \(ტიპური\)/)
+    assert.equal(manager.values[0], '−2 000 ₾'.replace(' ', '\u00a0'))
   } finally {
     catalog.fetch = saved
   }
+})
+
+test('a dollar listing shows its dollar price first; converted lari are rounded, so a new rate does not show', () => {
+  for (const usd of [2.6, 2.596, 2.5957]) {
+    const l = toListing({ id: '63333333-0000-4000-8000-000000000003', title: 'კაფე', category: 'restaurants', deal_type: 'sale', price: 20000, currency: 'USD', city: 'Tbilisi', description: 'ქირა 450$ თვეში, კვირაში 7 000 ლარის ბრუნვა' }, { ...rates, USD: usd })
+    const s = { ...snapshot, rates: { ...rates, USD: usd } } as unknown as CatalogSnapshot
+    const sheet = factSheet(l, s, sessionStateSchema.parse({ refs: [l.id] }), 'ka') as Record<string, string>
+    assert.match(sheet.price!, /^\$20\s000 \(≈ 52\s000 ₾\) \*\(განცხადება\)\*$/, `at ${usd}`)
+    assert.match(sheet.rent!, /^≈ 1\s200 ₾\/თვე \(\$450\)/, `at ${usd}`)
+    assert.match(sheet.turnover!, /^≈ 30\s000 ₾\/თვე \(7\s000 ₾ კვირაში\)/, 'a weekly figure as months, rounded')
+    const card = cardFor(l, s, sessionStateSchema.parse({ refs: [l.id] }), 'ka')
+    assert.deepEqual([card.priceGel, card.priceUsd], [52000, 20000], 'the card: its own dollars exact, the lari rounded')
+  }
+})
+
+test('a score an answer gave is kept on the fact sheet, so the next answer repeats it', async () => {
+  const saved = ai.agentStep
+  const text = '### #1 კაფე\n- **შეფასება:** 3/10\n### #2 საცხობი\n- **შეფასება:** 7,5/10\n\n**#2** ჯობია.'
+  ai.agentStep = (async function* () {
+    yield { type: 'text' as const, text }
+    yield { type: 'done' as const, model: 'stub', parts: [{ text }], calls: [] }
+  }) as typeof ai.agentStep
+  const sessions: Session[] = []
+  chatRepository.saveSession = async (s) => void sessions.push(s)
+  try {
+    const session: Session = { id: '00000000-0000-4000-8000-000000000016', userId: 'u', title: 't', locale: 'ka', profile: {}, state: sessionStateSchema.parse({ refs: [crowded.id, other.id], lastShown: [crowded.id, other.id], cardsShown: [crowded.id, other.id] }), turnCount: 3, expiresAt: new Date() }
+    await agentTurn({ session, input: { text: 'რომელი ჯობია?' }, emit: async () => {}, signal: new AbortController().signal })
+    const state = sessions.at(-1)!.state
+    assert.deepEqual(state.scores, { [crowded.id]: '3/10', [other.id]: '7.5/10' })
+    assert.equal((factSheet(other, snapshot, state, 'ka') as Record<string, string>).score, '7.5/10')
+  } finally {
+    ai.agentStep = saved
+    chatRepository.saveSession = async () => {}
+  }
+})
+
+test('a listing filed as "other" is named by what its text says it is, not "სხვა"', () => {
+  const state = sessionStateSchema.parse({})
+  const vague = toListing({ id: '64444444-0000-4000-8000-000000000004', title: 'იყიდება ბიზნესი ვაკეში', category: 'other', deal_type: 'sale', price: 30000, currency: 'GEL', city: 'Tbilisi', description: 'მოქმედი სილამაზის სალონი, 40 კვ.მ' }, rates)
+  assert.doesNotMatch(cardFor(vague, snapshot, state, 'ka').name, /^სხვა/)
+  const named = toListing({ id: '65555555-0000-4000-8000-000000000005', title: 'იყიდება ბიზნესი', category: 'other', deal_type: 'sale', price: 30000, currency: 'GEL', city: 'Tbilisi', description: 'კარგი ადგილი' }, rates)
+  assert.match(cardFor(named, snapshot, state, 'ka').name, /^სხვა/, 'nothing better to say: the category stays')
+})
+
+test("the seller message never carries the chat's own numbers", async () => {
+  const ctx = ctxOf()
+  await runTool('seller_message', { ref: '#2', message: 'გამარჯობა! დაინტერესებული ვარ #2 საცხობის ბიზნესით. რა არის #2-ის რეალური თვიური ბრუნვა?' }, ctx)
+  assert.equal(ctx.out.handoff!.text, 'გამარჯობა! დაინტერესებული ვარ საცხობის ბიზნესით. რა არის რეალური თვიური ბრუნვა?')
 })
 
 test('type and budget named: listings at once, no form; a vaguer start still gets the form', () => {

@@ -3,7 +3,7 @@ import { formatGel, pick, type Locale } from '../../../shared/i18n/locale.js'
 import { alerts } from '../../alerts/alerts.service.js'
 import { categoriesNamed, categoryLabel, cityLabel, knownCategoryKeys, normalizeCity } from '../../catalog/catalog.labels.js'
 import type { CatalogListing } from '../../catalog/catalog.model.js'
-import { catalog, type CatalogSnapshot } from '../../catalog/catalog.service.js'
+import { areaOf, catalog, type CatalogSnapshot } from '../../catalog/catalog.service.js'
 import { analyzeArea, competitionBrief, locateAddress, locateListing } from '../../competition/area.service.js'
 import { knowledge } from '../../knowledge/knowledge.service.js'
 import { webSearch } from '../../web/web.service.js'
@@ -43,9 +43,10 @@ export type ToolOutput = {
   handoff: Handoff | null // a ready message to the seller
   checklist: Checklist | null // what to check on site
   alert: AlertCard | null // a saved search was created
+  note: string | null // voice calls: what the AI put on screen instead of reading it out (show_note)
 }
 
-export const emptyOutput = (): ToolOutput => ({ cards: [], compare: null, sources: [], quickReplies: [], form: null, handoff: null, checklist: null, alert: null })
+export const emptyOutput = (): ToolOutput => ({ cards: [], compare: null, sources: [], quickReplies: [], form: null, handoff: null, checklist: null, alert: null, note: null })
 
 export type ToolContext = {
   s: CatalogSnapshot // replaced by a live snapshot when a tool fetches from the site
@@ -189,7 +190,9 @@ export const toolDeclarations: FunctionDeclaration[] = [
     parameters: {
       type: Type.OBJECT,
       properties: {
-        budget_gel: num('Money they can invest, in GEL (convert USD/EUR). Never a listing price'),
+        budget_amount: num('Money they can invest, exactly as they said it (150000 for "$150 000"). Never a listing price'),
+        budget_currency: str('The currency they said it in', ['GEL', 'USD', 'EUR']),
+        budget_gel: num('Only when the client gave no currency: the budget in GEL'),
         goal: str('Goal', GOALS),
         involvement: str('Time they can give', INVOLVEMENT),
         experience: str('Business experience', EXPERIENCE),
@@ -221,7 +224,7 @@ export const toolDeclarations: FunctionDeclaration[] = [
       type: Type.OBJECT,
       properties: {
         ref: refParam,
-        message: str('In the reply language, formal and polite throughout (Georgian: "დაინტერესებული ვარ", "თქვენ"): greeting, which listing, the open questions (real turnover, rent and lease, reason for sale, staff, debts, anything on its sheet\'s check line), documents or a visit. Under 120 words, no placeholders.'),
+        message: str('In the reply language, formal and polite throughout (Georgian: "დაინტერესებული ვარ", "თქვენ"): greeting, which listing (by its type and street or district, never "#n": the seller does not know the chat\'s numbers), the open questions (real turnover, rent and lease, reason for sale, staff, debts, anything on its sheet\'s check line), documents or a visit. Under 120 words, no placeholders.'),
       },
       required: ['ref', 'message'],
     },
@@ -253,6 +256,25 @@ export function toolsFor(ctx: ToolContext): FunctionDeclaration[] {
   const profile = named.length ? applyPatch(ctx.profile, { sectors: named }, ctx.turn).profile : ctx.profile
   const formAllowed = formWanted(profile)
   return toolDeclarations.filter((t) => (t.name !== 'show_form' || formAllowed) && (t.name !== 'recall_previous_chats' || Boolean(ctx.earlier?.length)))
+}
+
+// Usual monthly costs, used for the lines the model leaves out of a profit calculation and marked "typical" in the
+// table. Assumptions, not data: a service worker's wage (Geostat puts the average wage in accommodation and food
+// service near 1 200 ₾), a manager's, utilities per m² (food businesses run ovens and fridges), and a fixed sum for
+// accounting, the till and some marketing.
+const STAFF_WAGE_GEL = 1_200
+const MANAGER_WAGE_GEL = 2_000
+const FOOD_SERVICE = ['restaurants', 'bakery', 'bar_nightclub', 'food_products']
+const PROPERTY_TYPES = ['real_estate', 'commercial_space', 'offices', 'warehouse', 'land']
+
+function typicalCosts(l: CatalogListing | undefined, passive: boolean): { staff: number; manager: number; utilities: number; other: number } {
+  const food = Boolean(l && FOOD_SERVICE.includes(l.category))
+  const area = l ? areaOf(l) : null
+  const space = area ?? (food ? 50 : 40)
+  const stated = l?.insights?.staff.count
+  // The seller's staff count, unless it is not believable for the space (see the fact sheet's check line).
+  const people = stated && stated > 0 && !(area && area / stated < 2) ? stated : Math.max(food ? 2 : 1, Math.ceil(space / (food ? 30 : 50)))
+  return { staff: people * STAFF_WAGE_GEL, manager: passive ? MANAGER_WAGE_GEL : 0, utilities: Math.round(Math.max(food ? 400 : 200, space * (food ? 10 : 5))), other: 400 }
 }
 
 // The usual cost of goods, % of revenue, for the types that sell food or goods: used when the model gives none.
@@ -339,6 +361,14 @@ const sellerText = (l: CatalogListing, max: number) => (l.description.original |
 type Executor = (args: Record<string, unknown>, ctx: ToolContext) => Promise<unknown>
 
 const executors: Record<string, Executor> = {
+  // Voice calls only (its declaration is in chat/voice): written text the client reads instead of hearing.
+  async show_note(args, ctx) {
+    const markdown = String(args.markdown ?? '').replace(/<[^>]*>/g, '').trim().slice(0, 3000)
+    if (!markdown) return { error: 'Give the note as markdown.' }
+    ctx.out.note = ctx.out.note ? `${ctx.out.note}\n\n${markdown}` : markdown
+    return { shown: true, note: 'It is on the screen now: say so in a few words; do not read it out.' }
+  },
+
   async search_listings(args, ctx) {
     const turn = ctx.turn
     const categories = categoryArgs(args.categories, (c) => ctx.s.categories.includes(c) || PROPERTY.includes(c))
@@ -556,7 +586,22 @@ const executors: Record<string, Executor> = {
     const cogsGiven = n(args.cost_of_goods_pct)
     const cogsPct = cogsGiven ?? typicalCogs ?? 0
     const taxPct = n(args.tax_pct_of_revenue) ?? 1
-    const fixedCosts = { rent: Math.round(rent), staff: Math.round(n(args.staff_monthly_gel) ?? 0), owner_salary: Math.round(n(args.owner_salary_monthly_gel) ?? 0), utilities: Math.round(n(args.utilities_monthly_gel) ?? 0), other: Math.round(n(args.other_monthly_gel) ?? 0) }
+    // Every table has the whole cost template (production test, 29 Oct: a bakery with only cost of goods, rent and tax
+    // showed a 52 % margin). A line the model leaves out gets the usual figure for this type and size, marked typical:
+    // staff from the seller's count (when believable) or the floor area, a manager when the buyer wants passive income,
+    // utilities by area, a fixed sum for accounting and the rest. A business is assumed; property has no such lines.
+    const business = !listing || !PROPERTY_TYPES.includes(listing.category)
+    const typical = business ? typicalCosts(listing, val(ctx.profile, 'goal') === 'passive_income' || val(ctx.profile, 'involvement') === 'hands_off') : { staff: 0, manager: 0, utilities: 0, other: 0 }
+    const given = { staff: n(args.staff_monthly_gel), owner: n(args.owner_salary_monthly_gel), utilities: n(args.utilities_monthly_gel), other: n(args.other_monthly_gel) }
+    const fixedCosts = {
+      rent: Math.round(rent),
+      staff: Math.round(given.staff ?? typical.staff),
+      owner_salary: Math.round(given.owner ?? typical.manager),
+      utilities: Math.round(given.utilities ?? typical.utilities),
+      other: Math.round(given.other ?? typical.other),
+    }
+    const typicalLines = new Set([...(given.staff === null && typical.staff ? ['staff'] : []), ...(given.owner === null && typical.manager ? ['owner_salary'] : []), ...(given.utilities === null && typical.utilities ? ['utilities'] : []), ...(given.other === null && typical.other ? ['other'] : [])])
+    const layout = { typical: typicalLines, manager: given.owner === null && typical.manager > 0, ownerWorks: business && !fixedCosts.owner_salary, rentUnknown: business && !fixedCosts.rent && listing?.insights?.premises.tenure !== 'owned' }
     const fixedTotal = Object.values(fixedCosts).reduce((a, b) => a + b, 0)
     const total = price + extra
     const names = ['cautious', 'realistic', 'optimistic'] as const
@@ -564,21 +609,26 @@ const executors: Record<string, Executor> = {
       const cogs = Math.round((rev * cogsPct) / 100)
       const tax = Math.round((rev * taxPct) / 100)
       const profit = Math.round(rev - cogs - tax - fixedTotal)
-      const payback = profit > 0 ? Math.max(1, Math.round(total / profit)) : null
-      return { scenario: names[i]!, revenue_monthly_gel: Math.round(rev), cost_of_goods_gel: cogs, tax_gel: tax, fixed_costs_gel: fixedTotal, net_profit_monthly_gel: profit, payback_months: payback, yearly_return_pct: profit > 0 ? Math.round(((profit * 12) / total) * 100) : null }
+      // Judged before rounding: 5.5 months is under six even though it reads "6" when rounded (final test, T3).
+      const exact = profit > 0 ? total / profit : null
+      const payback = exact === null ? null : paybackMonths(exact)
+      return { scenario: names[i]!, revenue_monthly_gel: Math.round(rev), cost_of_goods_gel: cogs, tax_gel: tax, fixed_costs_gel: fixedTotal, net_profit_monthly_gel: profit, payback_months: payback, payback_fast: exact !== null && exact < 6, yearly_return_pct: profit > 0 ? Math.round(((profit * 12) / total) * 100) : null }
     })
     const warnings: string[] = []
-    if (scenarios.some((x) => x.payback_months !== null && x.payback_months < 6)) warnings.push('Payback under 6 months is unusually fast for a business: say so plainly and tell the client to verify the revenue with bank statements and receipts before trusting it.')
+    if (scenarios.some((x) => x.payback_fast)) warnings.push('Payback under 6 months is unusually fast for a business: say so plainly and tell the client to verify the revenue with bank statements and receipts before trusting it.')
     if (scenarios.some((x) => x.net_profit_monthly_gel <= 0)) warnings.push('At least one scenario loses money: say which.')
     if (!fixedCosts.staff && !fixedCosts.owner_salary) warnings.push('No staff or owner salary in the costs: the profit only holds if the owner works for free — say so, or recompute with staff.')
+    if (typicalLines.size) warnings.push(`Usual figures were used for ${[...typicalLines].join(', ')} (the table marks them): say they are assumptions, and ask the seller for the real costs.`)
+    if (layout.ownerWorks) warnings.push("No owner or manager salary: the profit includes the buyer's own work — say so.")
+    if (layout.rentUnknown) warnings.push('The rent is not known and not in the costs: say the profit is before rent until the seller states it.')
     if (!cogsPct) warnings.push('No cost of goods given: profit is overstated for any business that sells goods or food.')
     else if (cogsGiven === null) warnings.push(`No cost of goods given: the usual ${cogsPct}% for this type was used — say it is an assumption.`)
-    ctx.out.compare = profitTable(scenarios, fixedCosts, cogsPct, taxPct, total, ctx.locale, cogsGiven === null && cogsPct > 0)
+    ctx.out.compare = profitTable(scenarios, fixedCosts, cogsPct, taxPct, total, ctx.locale, { ...layout, cogsTypical: cogsGiven === null && cogsPct > 0 })
     if (listing) markTopic(ctx.state, listing.id, 'profit')
     return {
       listing: listing && sheet(ctx, listing),
       investment_gel: { price, extra, total },
-      same_cost_lines_in_every_scenario: { cost_of_goods_pct: cogsPct, cost_of_goods_source: cogsGiven !== null ? 'your assumption' : cogsPct ? 'usual for this type' : 'not given', tax_pct_of_revenue: taxPct, ...fixedCosts, rent_source: n(args.rent_monthly_gel) !== null ? 'your assumption' : statedRent ? 'the listing (seller says)' : 'not given' },
+      same_cost_lines_in_every_scenario: { cost_of_goods_pct: cogsPct, cost_of_goods_source: cogsGiven !== null ? 'your assumption' : cogsPct ? 'usual for this type' : 'not given', tax_pct_of_revenue: taxPct, ...fixedCosts, usual_figures_used_for: [...typicalLines], owner_salary_is: layout.manager ? 'a manager (the buyer wants passive income)' : 'the owner', rent_source: n(args.rent_monthly_gel) !== null ? 'your assumption' : statedRent ? 'the listing (seller says)' : 'not given' },
       scenarios,
       warnings,
       note: 'The scenario table is on screen. Explain these numbers; do not recompute or change them. Label the revenue as your estimate and the rent by its source.',
@@ -602,7 +652,7 @@ const executors: Record<string, Executor> = {
       result,
       if_income_20pct_lower: pm(monthly * 0.8),
       if_income_20pct_higher: pm(monthly * 1.2),
-      warning: result.payback_months < 6 ? 'Payback under 6 months is unusually fast: tell the client to verify the income with documents.' : undefined,
+      warning: total / monthly < 6 ? 'Payback under 6 months is unusually fast: tell the client to verify the income with documents.' : undefined,
       benchmark: 'Small businesses usually sell for 1–3 years of owner profit; rental property usually yields 6–10% a year',
     }
   },
@@ -624,7 +674,15 @@ const executors: Record<string, Executor> = {
   async update_profile(args, ctx) {
     const patch: Record<string, unknown> = {}
     const enumOk = <T extends readonly string[]>(v: unknown, allowed: T): v is T[number] => typeof v === 'string' && allowed.includes(v)
-    if (typeof args.budget_gel === 'number' && args.budget_gel >= 500) {
+    // The amount in the client's own currency ("$150 000") is kept as said and converted for the search; the strip
+    // shows it as said, with the lari as a rounded hint (round 7: "150 000$" became "≤ 389 355 ₾").
+    const amount = typeof args.budget_amount === 'number' && args.budget_amount > 0 ? args.budget_amount : null
+    const currency = typeof args.budget_currency === 'string' && /^(GEL|USD|EUR)$/i.test(args.budget_currency) ? args.budget_currency.toUpperCase() : 'GEL'
+    const asSaid = amount !== null ? toGel(amount, currency, ctx.s.rates) : null
+    if (asSaid && asSaid >= 500) {
+      patch.budgetGel = Math.round(asSaid)
+      if (currency !== 'GEL') patch.budgetOriginal = { amount, currency }
+    } else if (typeof args.budget_gel === 'number' && args.budget_gel >= 500) {
       // Never let a listing price slip in as the budget: it must not equal a shown price.
       const shownPrices = ctx.state.lastShown.map((id) => ctx.s.byId.get(id)?.priceGel ?? -1)
       if (!shownPrices.some((p) => Math.abs(p - Number(args.budget_gel)) < 1)) patch.budgetGel = Math.round(args.budget_gel)
@@ -683,7 +741,10 @@ const executors: Record<string, Executor> = {
     const { listing: l, error } = await liveRef(ctx, String(args.ref ?? ''))
     if (!l) return { error }
     // Models name the field "message", "text" or "body"; any of them is the message.
-    const text = String(args.message ?? args.text ?? args.body ?? args.content ?? '').trim().slice(0, 1500)
+    // "#3" means nothing to the seller (production test: "დაინტერესებული ვარ #3 საცხობის ბიზნესით"): the chat's numbers,
+    // with any ending ("#3-ის"), are taken out; the listing page the message is sent from says which listing it is.
+    const raw = String(args.message ?? args.text ?? args.body ?? args.content ?? '').trim().slice(0, 1500)
+    const text = raw.replace(/\s?#\d{1,3}(?!\d)(?:-\p{L}+)?/gu, '').replace(/ {2,}/g, ' ').replace(/ ([,.!?])/g, '$1').trim()
     if (text.length < 20) return { error: 'Write the whole message in "message".' }
     ctx.out.handoff = { listingId: l.id, n: refOf(ctx.state, l.id), name: shortName(l, ctx.locale), url: listingUrl(l, ctx.locale), text }
     focus(ctx, l)
@@ -738,30 +799,47 @@ export function fallbackHandoff(ctx: ToolContext, l: CatalogListing): void {
 // The budget a client states in a message ("50 ათასი მაქვს", "30 ათასამდე", "5 000 ლარად", "до 30 000"), in GEL, so
 // the form and the search use it even when the model forgets to call update_profile.
 export function statedBudget(text: string, rates: FxRates): number | null {
+  return statedMoney(text, rates)?.gel ?? null
+}
+
+// The same, with the amount and currency as the client wrote them.
+export function statedMoney(text: string, rates: FxRates): { gel: number; amount: number; currency: string } | null {
   const amounts = extractAmounts(text)
   const forAmount = /ლარად|დოლარად|ევროდ|\$-?ად/.test(text)
   const a = amounts.find((x) => x.role === 'budget') ?? (forAmount ? amounts.find((x) => x.role === 'unknown') : undefined)
   if (!a) return null
-  const gel = toGel(a.max ?? a.value, a.currency, rates)
-  return gel && gel >= 500 ? Math.round(gel) : null
+  const amount = a.max ?? a.value
+  const gel = toGel(amount, a.currency, rates)
+  return gel && gel >= 500 ? { gel: Math.round(gel), amount, currency: (a.currency ?? 'GEL').toUpperCase() } : null
 }
+
+// The patch for a budget the client stated: in GEL for the search, and as said when it was another currency.
+export function budgetPatch(money: { gel: number; amount: number; currency: string }): Partial<Record<'budgetGel' | 'budgetOriginal', unknown>> {
+  return money.currency === 'GEL' ? { budgetGel: money.gel } : { budgetGel: money.gel, budgetOriginal: { amount: money.amount, currency: money.currency } }
+}
+
+// Months to pay back, as shown: one decimal under ten months ("5.5"), whole months from there; never below 0.1.
+export const paybackMonths = (exact: number) => (exact < 10 ? Math.max(0.1, Math.round(exact * 10) / 10) : Math.round(exact))
 
 // The three profit scenarios as a table under the answer: the same cost lines in every column.
 function profitTable(
-  scenarios: { scenario: string; revenue_monthly_gel: number; cost_of_goods_gel: number; tax_gel: number; net_profit_monthly_gel: number; payback_months: number | null; yearly_return_pct: number | null }[],
+  scenarios: { scenario: string; revenue_monthly_gel: number; cost_of_goods_gel: number; tax_gel: number; net_profit_monthly_gel: number; payback_months: number | null; payback_fast: boolean; yearly_return_pct: number | null }[],
   fixed: Record<string, number>,
   cogsPct: number,
   taxPct: number,
   total: number,
   locale: Locale,
-  cogsTypical = false,
+  layout: { cogsTypical: boolean; typical: Set<string>; manager: boolean; ownerWorks: boolean; rentUnknown: boolean },
 ): CompareTable {
   const t = (ka: string, en: string, ru: string) => pick({ ka, en, ru }, locale)
   const gel = (x: number) => formatGel(x, locale)
   const names = { cautious: t('ფრთხილი', 'Cautious', 'Осторожный'), realistic: t('რეალისტური', 'Realistic', 'Реалистичный'), optimistic: t('ოპტიმისტური', 'Optimistic', 'Оптимистичный') } as Record<string, string>
   const months = t('თვე', 'months', 'мес.')
   const fast = t('უჩვეულოდ სწრაფია, გადაამოწმეთ შემოსავალი', 'unusually fast, verify the revenue', 'подозрительно быстро, проверьте выручку')
-  const fixedRow = (key: string, label: string) => (fixed[key] ? [{ key, label, values: scenarios.map(() => `−${gel(fixed[key]!)}`) }] : [])
+  const usual = t('ტიპური', 'typical', 'типично')
+  const fixedRow = (key: string, label: string) => (fixed[key] ? [{ key, label: layout.typical.has(key) ? `${label} (${usual})` : label, values: scenarios.map(() => `−${gel(fixed[key]!)}`) }] : [])
+  // A line that is not in the costs is still shown, so its absence is seen: unknown rent, the owner's own work.
+  const absentRow = (key: string, label: string) => [{ key, label, values: scenarios.map(() => '—') }]
   return {
     kind: 'profit',
     title: t('მოგების სცენარები (თვეში, შეფასება)', 'Profit scenarios (per month, estimate)', 'Сценарии прибыли (в месяц, оценка)'),
@@ -769,16 +847,18 @@ function profitTable(
     heads: scenarios.map((s) => ({ id: s.scenario, name: names[s.scenario] ?? s.scenario })),
     rows: [
       { key: 'revenue', label: t('შემოსავალი', 'Revenue', 'Выручка'), values: scenarios.map((s) => gel(s.revenue_monthly_gel)) },
-      ...(cogsPct ? [{ key: 'cogs', label: cogsTypical ? t(`პროდუქციის ღირებულება (${cogsPct}%, ტიპური)`, `Cost of goods (${cogsPct}%, typical)`, `Себестоимость (${cogsPct}%, типично)`) : t(`პროდუქციის ღირებულება (${cogsPct}%)`, `Cost of goods (${cogsPct}%)`, `Себестоимость (${cogsPct}%)`), values: scenarios.map((s) => `−${gel(s.cost_of_goods_gel)}`) }] : []),
-      ...fixedRow('rent', t('ქირა', 'Rent', 'Аренда')),
+      ...(cogsPct ? [{ key: 'cogs', label: layout.cogsTypical ? t(`პროდუქციის ღირებულება (${cogsPct}%, ტიპური)`, `Cost of goods (${cogsPct}%, typical)`, `Себестоимость (${cogsPct}%, типично)`) : t(`პროდუქციის ღირებულება (${cogsPct}%)`, `Cost of goods (${cogsPct}%)`, `Себестоимость (${cogsPct}%)`), values: scenarios.map((s) => `−${gel(s.cost_of_goods_gel)}`) }] : []),
+      ...(layout.rentUnknown ? absentRow('rent', t('ქირა (არ არის მითითებული)', 'Rent (not stated)', 'Аренда (не указана)')) : fixedRow('rent', t('ქირა', 'Rent', 'Аренда'))),
       ...fixedRow('staff', t('პერსონალი', 'Staff', 'Персонал')),
-      ...fixedRow('owner_salary', t('მფლობელის ხელფასი', 'Owner salary', 'Зарплата владельца')),
+      ...(layout.ownerWorks
+        ? absentRow('owner_salary', t('მფლობელის ხელფასი (თქვენი შრომა, არ ითვლება)', 'Owner salary (your own work, not counted)', 'Зарплата владельца (ваш труд, не учтён)'))
+        : fixedRow('owner_salary', layout.manager ? t('მენეჯერის ხელფასი', 'Manager salary', 'Зарплата управляющего') : t('მფლობელის ხელფასი', 'Owner salary', 'Зарплата владельца'))),
       ...fixedRow('utilities', t('კომუნალურები', 'Utilities', 'Коммунальные')),
       ...fixedRow('other', t('სხვა ხარჯები', 'Other costs', 'Прочие расходы')),
       { key: 'tax', label: t(`გადასახადი (${taxPct}%)`, `Tax (${taxPct}%)`, `Налог (${taxPct}%)`), values: scenarios.map((s) => `−${gel(s.tax_gel)}`) },
       { key: 'profit', label: t('წმინდა მოგება', 'Net profit', 'Чистая прибыль'), values: scenarios.map((s) => gel(s.net_profit_monthly_gel)) },
       // Under 6 months is unusually fast for a business: said in the table itself, so no answer can skip it.
-      { key: 'payback', label: t(`ანაზღაურება (${gel(total)})`, `Payback (${gel(total)})`, `Окупаемость (${gel(total)})`), values: scenarios.map((s) => (s.payback_months === null ? '—' : `${s.payback_months} ${months}${s.payback_months < 6 ? ` — ${fast}` : ''}`)) },
+      { key: 'payback', label: t(`ანაზღაურება (${gel(total)})`, `Payback (${gel(total)})`, `Окупаемость (${gel(total)})`), values: scenarios.map((s) => (s.payback_months === null ? '—' : `${s.payback_months} ${months}${s.payback_fast ? ` — ${fast}` : ''}`)) },
     ],
   }
 }

@@ -19,7 +19,7 @@ import { entryQuickReplies, profileItems, texts } from '../templates/templates.j
 import { collectNumbers, validateReply } from '../validator/validator.service.js'
 import { agentSystem } from './agent.prompt.js'
 import { cardFor, factSheet, refOf, shortName } from './agent.facts.js'
-import { applyFormAnswers, emptyOutput, fallbackHandoff, profileFacts, runTool, statedBudget, terminalTools, toolDeclarations, toolsFor, type ToolContext, type ToolOutput } from './agent.tools.js'
+import { applyFormAnswers, budgetPatch, emptyOutput, fallbackHandoff, profileFacts, runTool, statedMoney, terminalTools, toolDeclarations, toolsFor, type ToolContext, type ToolOutput } from './agent.tools.js'
 import { formWanted, missingKeyFacts, promisesForm, promisesListings, standardForm } from './agent.fallback.js'
 import { answerChips, clickedKey, mergeChips, nextSteps, offeredFrom, topicsOf } from './agent.next.js'
 import { createRepeatCheck, createTextFilter, fixScript, profileArgsIn, withoutTables, type HiddenBlock } from './agent.text.js'
@@ -115,8 +115,8 @@ export async function agentTurn(params: Params): Promise<void> {
 
   // A budget stated in the message is known now, whether or not the model saves it (the form and search use it).
   if (input.text) {
-    const budget = statedBudget(input.text, s.rates)
-    if (budget && budget !== val(profile, 'budgetGel')) profile = applyPatch(profile, { budgetGel: budget }, turn).profile
+    const money = statedMoney(input.text, s.rates)
+    if (money && money.gel !== val(profile, 'budgetGel')) profile = applyPatch(profile, budgetPatch(money), turn).profile
   }
 
   // The conversation so far, as text (tool calls from earlier turns are not replayed; the fact sheets carry them).
@@ -367,6 +367,7 @@ export async function agentTurn(params: Params): Promise<void> {
   state.lastIntent = 'chat'
   state.profileEdited = []
   if (asked) state.askedRecently = [...state.askedRecently, asked].slice(-2)
+  rememberScores(reply, state)
   // A table the model wrote itself never reaches the history (the app shows its own computed one).
   const messageId = await saveAnswer(session, { title, profile, state, locale, turn, reply: withoutTables(reply), out, model, incomplete })
   logger.info('turn', { session: session.id, model, steps: mainSteps, continuations, ms: Date.now() - started, tools: calledTools, incomplete })
@@ -465,7 +466,8 @@ function editNote(keys: string[], profile: Session['profile'], locale: Locale): 
   const items = profileItems(profile, locale)
   const changes = keys.map((k) => {
     const item = items.find((i) => i.key === k || (k === 'cities' && i.key === 'locationFlexible'))
-    return item ? `${item.label} → ${item.value}` : `${k} → removed`
+    // Strip values that carry their own label ("გამოცდილება: ცოტა") are not labelled twice.
+    return item ? (item.value.startsWith(`${item.label}:`) ? item.value : `${item.label} → ${item.value}`) : `${k} → removed`
   })
   return `(Note from the app, not from the client: in the memory strip the client just changed: ${changes.join('; ')}. These replace anything said earlier in the chat. Start your reply with one short line confirming the change, then use the new values.)`
 }
@@ -474,6 +476,19 @@ function editNote(keys: string[], profile: Session['profile'], locale: Locale): 
 function askedNote(asked: string[]): string | null {
   if (!asked.length) return null
   return `(Note from the app, not from the client: you already asked ${asked.map((q) => `"${q}"`).join(' and ')}. Do not ask that again in this answer, not even in other words, and never offer what CONTEXT.already_done lists — end with a different question, or with none.)`
+}
+
+// The scores an answer gave ("### #2 საკონდიტრო … შეფასება: 8/10"): each belongs to the last listing named before it.
+// Kept on the listing's fact sheet, so the next answers repeat it instead of scoring again (production test: 8/10
+// in a comparison, 7.2/10 one turn later).
+const SCORE = /(?:შეფასება|score|оценка)[\s:：*_]*(\d{1,2}(?:[.,]\d)?)\s*\/\s*10/giu
+function rememberScores(reply: string, state: Session['state']): void {
+  const marks = [...reply.matchAll(/#(\d{1,3})(?!\d)/g)].map((m) => ({ at: m.index!, id: state.refs[Number(m[1]) - 1] }))
+  for (const m of reply.matchAll(SCORE)) {
+    const id = marks.filter((x) => x.at < m.index!).at(-1)?.id
+    const value = Number(m[1]!.replace(',', '.'))
+    if (id && value >= 0 && value <= 10) state.scores = { ...state.scores, [id]: `${m[1]!.replace(',', '.')}/10` }
+  }
 }
 
 // The listings a text names by number ("#2", "#4-ის"), in order, once each.
@@ -609,7 +624,7 @@ function modelUnavailable(model: string): AppError {
 }
 
 // The chat's name in the history: the first thing the user wrote, shortened.
-function titleFrom(text: string): string {
+export function titleFrom(text: string): string {
   const t = text.replace(/\s+/g, ' ').trim()
   return t.length > 60 ? `${t.slice(0, 57).trimEnd()}…` : t
 }
@@ -630,7 +645,7 @@ async function unavailable(
 
 // What the model knows about this session besides the conversation: the listings with their fact sheets, the profile,
 // what it asked recently and what the client changed in the memory strip.
-function agentContext(ctx: ToolContext) {
+export function agentContext(ctx: ToolContext) {
   const { state, s, locale } = ctx
   const onScreen = state.lastShown.map((id) => s.byId.get(id)).filter((l): l is NonNullable<typeof l> => Boolean(l))
   const focus = state.contextListingId ? s.byId.get(state.contextListingId) : undefined

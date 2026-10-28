@@ -4,6 +4,7 @@ import { categoryLabel, cityLabel, districtLabel } from '../../catalog/catalog.l
 import { placeHints } from '../../competition/area.service.js'
 import type { CatalogListing } from '../../catalog/catalog.model.js'
 import { financialsLevel } from '../../catalog/catalog.service.js'
+import { approx } from '../../fx/fx.service.js'
 import { reasonLabel } from '../templates/templates.js'
 import { assetClassOf, type ReasonCode, type Scored } from './search.tool.js'
 
@@ -70,13 +71,14 @@ export function toCard(l: CatalogListing, locale: Locale, scored?: Scored, usdRa
     category: l.category,
     categoryLabel: categoryLabel(l.category, locale),
     city: cityLabel(l.city, locale),
-    priceGel: l.priceGel === null ? null : Math.round(l.priceGel),
+    // The price in its own currency is exact (price, currency); the other one is a rounded estimate.
+    priceGel: l.priceGel === null ? null : l.currency && l.currency !== 'GEL' ? approx(l.priceGel) : Math.round(l.priceGel),
     price: l.price,
     currency: l.currency,
     negotiable: l.negotiable,
     coverImage: l.coverImage,
     images: l.images.length ? l.images : l.coverImage ? [l.coverImage] : [],
-    priceUsd: l.priceGel !== null && usdRate ? Math.round(l.priceGel / usdRate) : null,
+    priceUsd: l.currency === 'USD' && l.price ? l.price : l.priceGel !== null && usdRate ? approx(l.priceGel / usdRate) : null,
     // Many listings leave the district empty but name it in the title or text ("ვაკეში").
     district: districtLabel(l.district ?? placeHints(`${l.title.ka ?? ''} ${l.title.en ?? ''} ${l.description.original}`).neighbourhood, locale) || null,
     area: l.area,

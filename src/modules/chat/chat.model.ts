@@ -53,6 +53,7 @@ export const sessionStateSchema = z.object({
     .record(z.string(), z.object({ radiusM: z.number(), direct: z.number(), within150m: z.number(), nearest: z.array(z.string()), precision: z.string() }))
     .default({}),
   topics: z.record(z.string(), z.array(z.string())).default({}), // listing id → topics already answered (risks, location…)
+  scores: z.record(z.string(), z.string()).default({}), // listing id → the score an answer gave it ("8/10"), kept on its fact sheet
   nextShown: z.array(z.object({ key: z.string(), text: z.string() })).default([]), // next-step chips offered last turn
   askedRecently: z.array(z.string()).default([]), // the closing questions of the last two answers (never asked again)
   profileEdited: z.array(z.string()).default([]), // facts the client changed in the memory strip since the last answer

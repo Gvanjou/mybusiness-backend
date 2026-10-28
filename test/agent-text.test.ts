@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { createTextFilter } from '../src/modules/chat/agent/agent.text.js'
+import { createRepeatCheck, createTextFilter } from '../src/modules/chat/agent/agent.text.js'
 
 // The model's text goes out as it arrives, except a hidden options block, which becomes chips.
 
@@ -27,4 +27,12 @@ test('a broken block is dropped without inventing options', () => {
   const r = run(['პასუხი.', '<script>{"options": [broken'])
   assert.equal(r.shown, 'პასუხი.')
   assert.deepEqual(r.options, [])
+})
+
+test('a long opening with no sentence end passes through whole: no word is ever cut at a chunk boundary (final test, T1)', () => {
+  const before = 'განცხადებაში მითითებული ბრუნვა და ქირა ერთად ოცდაათი ათასი ლარია.'
+  const check = createRepeatCheck(before)
+  const out = check.push(`${before.slice(0, -1)} ${before.slice(0, -1)} ${before.slice(0, -1)} ${before.slice(0, -1)} ${before.slice(0, -1)}, გან`) + check.push('ცხადებაში ქირა 450 ლარია.') + check.end()
+  assert.ok(out.includes('განცხადებაში ქირა'), out)
+  assert.ok(!out.startsWith('ცხადებაში'))
 })

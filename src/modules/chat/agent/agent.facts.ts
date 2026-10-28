@@ -1,9 +1,9 @@
 import { formatNumber, pick, type Locale, type Localized } from '../../../shared/i18n/locale.js'
-import { categoryLabel, cityLabel, districtLabel } from '../../catalog/catalog.labels.js'
+import { categoriesNamed, categoryLabel, cityLabel, districtLabel } from '../../catalog/catalog.labels.js'
 import type { CatalogListing, Money } from '../../catalog/catalog.model.js'
 import { areaOf, peerPool, type CatalogSnapshot } from '../../catalog/catalog.service.js'
 import { placeHints } from '../../competition/area.service.js'
-import { toGel, type FxRates } from '../../fx/fx.service.js'
+import { approx, toGel, type FxRates } from '../../fx/fx.service.js'
 import type { SessionState } from '../chat.model.js'
 import { toCard, type ListingCard } from '../tools/cards.js'
 import type { Scored } from '../tools/search.tool.js'
@@ -53,10 +53,19 @@ function kindOf(l: CatalogListing, locale: Locale): string {
     .filter((w) => !(locale === 'ka' && /(ში|ზე)$/.test(w) && w.length > 4))
   const kind = words.slice(0, 3).join(' ')
   const genitiveOnly = locale === 'ka' && /ის$/.test(kind)
-  if (!kind || kind.length > 32 || words.length > 3 || genitiveOnly || !SCRIPT[locale].test(kind)) return categoryLabel(l.category, locale)
-  // Georgian has no capitals (toUpperCase would turn Mkhedruli into Mtavruli letters).
-  return locale === 'ka' ? kind : kind.charAt(0).toUpperCase() + kind.slice(1)
+  if (kind && kind.length <= 32 && words.length <= 3 && !genitiveOnly && SCRIPT[locale].test(kind)) return capital(kind, locale)
+  if (!GENERIC.includes(l.category)) return categoryLabel(l.category, locale)
+  // "სხვა · ვაკე" says nothing (production test): a business type the title or text names, else the title's first
+  // two words, before the bare category.
+  const named = categoriesNamed(`${pick(l.title, locale)} ${l.description.original}`).find((c) => !GENERIC.includes(c))
+  if (named) return categoryLabel(named, locale)
+  const first = words.slice(0, 2).join(' ')
+  return first && first.length <= 32 && SCRIPT[locale].test(first) && !(locale === 'ka' && /ის$/.test(first)) ? capital(first, locale) : categoryLabel(l.category, locale)
 }
+
+const GENERIC = ['other', 'services']
+// Georgian has no capitals (toUpperCase would turn Mkhedruli into Mtavruli letters).
+const capital = (text: string, locale: Locale) => (locale === 'ka' ? text : text.charAt(0).toUpperCase() + text.slice(1))
 
 // What the business is, for a chip: "საკონდიტრო".
 export function kindName(l: CatalogListing, locale: Locale): string {
@@ -109,11 +118,18 @@ function monthlyGel(m: NonNullable<Money>, rates: FxRates): [number, number] | n
   return lo === null || hi === null ? null : [Math.round(lo), Math.round(hi)]
 }
 
+// For showing: a figure converted from another currency or another period is an estimate, rounded (see approx).
+function shownGel(m: NonNullable<Money>, rates: FxRates): [number, number] | null {
+  const gel = monthlyGel(m, rates)
+  if (!gel) return null
+  return m.currency !== 'GEL' || m.stated ? [approx(gel[0]), approx(gel[1])] : gel
+}
+
 // "≈ 5 460 ₾/თვე ($2 100)", "≈ 21 000–24 000 ₾/თვე (700–800 ₾ დღეში)": per month in lari first, then the figure as
 // the seller wrote it. Dollars as "$", never "USD".
 export function moneyForUi(m: Money, rates: FxRates, locale: Locale): string | null {
   if (!m) return null
-  const gel = monthlyGel(m, rates)
+  const gel = shownGel(m, rates)
   const sym = SYMBOL[m.currency] ?? m.currency
   const money = (a: number, b: number, s: string) => (s === '$' || s === '€' ? `${s}${range(a, b, locale)}` : `${range(a, b, locale)} ${s}`)
   const as = m.stated ? `${money(m.stated.min, m.stated.max, sym)} ${pick(PER[m.stated.period], locale)}` : m.currency !== 'GEL' ? money(m.min, m.max, sym) : null
@@ -121,8 +137,18 @@ export function moneyForUi(m: Money, rates: FxRates, locale: Locale): string | n
   return `≈ ${range(gel[0], gel[1], locale)} ₾${pick(PER_MONTH, locale)}${as ? ` (${as})` : ''}`
 }
 
-const priceText = (l: CatalogListing, locale: Locale) =>
-  l.priceGel === null ? null : `${num(l.priceGel, locale)} ₾${l.currency && l.currency !== 'GEL' && l.price ? ` (${SYMBOL[l.currency] ?? l.currency}${num(l.price, locale)})` : ''}`
+// The price as the seller set it, first: "$75 000 (≈ 195 000 ₾)" for a listing in dollars, "52 000 ₾" in lari.
+const priceText = (l: CatalogListing, locale: Locale) => {
+  if (l.priceGel === null) return null
+  if (!l.currency || l.currency === 'GEL' || !l.price) return `${num(l.priceGel, locale)} ₾`
+  return `${SYMBOL[l.currency] ?? l.currency}${num(l.price, locale)} (≈ ${num(approx(l.priceGel), locale)} ₾)`
+}
+
+// How far over the budget, as shown: rounded when the price is converted.
+const overBy = (l: CatalogListing, budget: number) => {
+  const over = l.priceGel! - budget
+  return l.currency && l.currency !== 'GEL' ? approx(over) : Math.round(over)
+}
 
 // ── Like with like: a 15 m² kiosk is not measured against the median restaurant ──
 
@@ -179,8 +205,8 @@ function doubtsOf(l: CatalogListing, s: CatalogSnapshot, locale: Locale, area: n
   if (area && staff && staff >= 3 && area / staff < 2) out.push(say(W.staffForArea, locale, { n: staff, a: area }))
   const profit = i?.financials.profit_monthly ? monthlyGel(i.financials.profit_monthly, s.rates) : null
   if (profit && profit[1] > 0 && l.priceGel) {
-    const months = Math.round(l.priceGel / profit[1])
-    if (months < 6) out.push(say(W.fastPayback, locale, { m: Math.max(1, months) }))
+    const months = l.priceGel / profit[1]
+    if (months < 6) out.push(say(W.fastPayback, locale, { m: Math.max(0.1, Math.round(months * 10) / 10) }))
   }
   return out
 }
@@ -213,13 +239,13 @@ export function listingFacts(l: CatalogListing, s: CatalogSnapshot, state: Sessi
     staff: i?.staff.count != null ? ({ value: say(W.people, locale, { n: i.staff.count }), source: 'seller' } as Fact) : null,
     years: i?.yearsOperating != null ? ({ value: say(W.years, locale, { n: i.yearsOperating }), source: 'seller' } as Fact) : null,
     vsSimilar: p
-      ? ({ value: say(W.vsSimilar, locale, { pct: `${p.diffPct > 0 ? '+' : ''}${p.diffPct}%`, median: num(p.medianGel, locale), basis: p.basisUi }), source: 'calc' } as Fact)
+      ? ({ value: say(W.vsSimilar, locale, { pct: `${p.diffPct > 0 ? '+' : ''}${p.diffPct}%`, median: num(approx(p.medianGel), locale), basis: p.basisUi }), source: 'calc' } as Fact)
       : l.priceGel !== null
         ? ({ value: pick(W.fewSimilar, locale), source: 'calc' } as Fact)
         : null,
     budget:
       budget && l.priceGel !== null
-        ? ({ value: l.priceGel > budget ? say(W.overBudget, locale, { over: num(l.priceGel - budget, locale), budget: num(budget, locale) }) : say(W.inBudget, locale, { budget: num(budget, locale) }), source: 'calc' } as Fact)
+        ? ({ value: l.priceGel > budget ? say(W.overBudget, locale, { over: num(overBy(l, budget), locale), budget: num(budget, locale) }) : say(W.inBudget, locale, { budget: num(budget, locale) }), source: 'calc' } as Fact)
         : null,
     competitors: place
       ? ({ value: say(W.competitors, locale, { n: place.direct, r: place.radiusM, n150: place.within150m, nearest: place.nearest.length ? say(W.nearest, locale, { list: place.nearest.join(', ') }) : '' }), source: 'map' } as Fact)
@@ -274,6 +300,8 @@ export function factSheet(l: CatalogListing, s: CatalogSnapshot, state: SessionS
     // No competitors line: the map was not read yet (the brief says to call location_analysis first).
     ...(f.competitors ? { competitors: q(f.competitors) } : {}),
     ...(f.doubts.length ? { check: `${f.doubts.join('; ')} *${pick(SOURCE.calc, locale)}*` } : {}),
+    // The score an earlier answer gave: repeated, not redone (see the brief).
+    ...(state.scores[l.id] ? { score: state.scores[l.id] } : {}),
     ...(notStated.length ? { not_stated: notStated.join(', ') } : {}),
   }
 }
@@ -300,7 +328,7 @@ function tagsFor(l: CatalogListing, s: CatalogSnapshot, locale: Locale, budget?:
   const i = l.insights
   const out: Tag[] = []
   const isProperty = ['real_estate', 'commercial_space', 'offices', 'warehouse', 'land'].includes(l.category)
-  if (budget && l.priceGel !== null && l.priceGel > budget) out.push({ code: 'OVER_BUDGET', label: say(TAG.overBudget, locale, { v: num(l.priceGel - budget, locale) }), tone: 'warn' })
+  if (budget && l.priceGel !== null && l.priceGel > budget) out.push({ code: 'OVER_BUDGET', label: say(TAG.overBudget, locale, { v: num(overBy(l, budget), locale) }), tone: 'warn' })
   if (i?.isOperating === false) out.push({ code: 'CLOSED', label: say(TAG.closed, locale), tone: 'warn' })
   if (doubtsOf(l, s, locale, areaOf(l)).length) out.push({ code: 'CHECK_CLAIMS', label: say(TAG.doubt, locale), tone: 'warn' })
   if (isProperty) out.push({ code: 'PROPERTY_NOT_BUSINESS', label: say(TAG.property, locale), tone: 'info' })

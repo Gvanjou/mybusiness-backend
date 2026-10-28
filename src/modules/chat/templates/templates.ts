@@ -1,5 +1,6 @@
-import { formatGel, pick, type Locale, type Localized } from '../../../shared/i18n/locale.js'
+import { formatGel, formatNumber, pick, type Locale, type Localized } from '../../../shared/i18n/locale.js'
 import { categoryLabel, cityLabel } from '../../catalog/catalog.labels.js'
+import { approx } from '../../fx/fx.service.js'
 import type { Profile, ProfileKey } from '../profile/profile.model.js'
 import type { ReasonCode } from '../tools/search.tool.js'
 
@@ -106,17 +107,27 @@ const valueLabels: Record<string, Localized> = {
 export type ProfileItem = { key: ProfileKey; label: string; value: string; inferred: boolean }
 
 // "What I know about you" panel in the UI.
+const SYMBOL: Record<string, string> = { USD: '$', EUR: '€' }
+const SELF_EXPLANATORY = new Set<ProfileKey>(['budgetGel', 'cities', 'sectors'])
+
 export function profileItems(p: Profile, locale: Locale): ProfileItem[] {
   const items: ProfileItem[] = []
   for (const key of Object.keys(fieldLabels) as ProfileKey[]) {
     const f = p[key]
     if (!f) continue
     let value: string
-    if (key === 'budgetGel') value = `≤ ${formatGel(Number(f.value), locale)}`
+    // As the client said it ("≤ $150 000"), the lari only as a rounded hint; the lari alone when that is what they said.
+    if (key === 'budgetGel') {
+      const said = p.budgetOriginal
+      const asSaid = said && said.turn >= f.turn && said.value.currency !== 'GEL' ? said.value : null
+      value = asSaid ? `≤ ${SYMBOL[asSaid.currency] ?? asSaid.currency}${formatNumber(asSaid.amount, locale)} (≈ ${formatGel(approx(Number(f.value)), locale)})` : `≤ ${formatGel(Number(f.value), locale)}`
+    }
     else if (key === 'cities') value = p.locationFlexible?.value === true || (f.value as string[]).length === 0 ? pick(t('ნებისმიერი', 'Any', 'Любой'), locale) : (f.value as string[]).map((c) => cityLabel(c, locale)).join(', ')
     else if (key === 'sectors') value = (f.value as string[]).map((c) => categoryLabel(c, locale)).join(', ') || pick(t('ნებისმიერი', 'Any', 'Любая'), locale)
     else value = valueLabels[String(f.value)] ? pick(valueLabels[String(f.value)]!, locale) : String(f.value)
-    items.push({ key, label: pick(fieldLabels[key]!, locale), value, inferred: f.status === 'inferred' })
+    // A value that says nothing on its own ("ცოტა") is shown with its label ("გამოცდილება: ცოტა").
+    const label = pick(fieldLabels[key]!, locale)
+    items.push({ key, label, value: SELF_EXPLANATORY.has(key) ? value : `${label}: ${value}`, inferred: f.status === 'inferred' })
   }
   if (p.locationFlexible?.value === true && !p.cities) {
     items.push({ key: 'locationFlexible', label: pick(fieldLabels.cities!, locale), value: pick(t('ნებისმიერი', 'Any', 'Любой'), locale), inferred: false })

@@ -54,6 +54,15 @@ const envSchema = z.object({
     .enum(['true', 'false'])
     .default('false')
     .transform((v) => v === 'true'),
+  // Voice calls (Gemini Live). The browser talks to Google directly with a short-lived, locked token from
+  // /voice/session; the tools still run here. Off by default while Georgian voice quality is being tested.
+  VOICE_ENABLED: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((v) => v === 'true'),
+  GEMINI_LIVE_MODEL: z.string().min(1).default('gemini-3.8-live'),
+  GEMINI_LIVE_VOICE: z.string().min(1).default('Kore'),
+  VOICE_MINUTES_PER_DAY: z.coerce.number().int().positive().default(20),
   CHAT_MESSAGES_PER_MINUTE: z.coerce.number().int().positive().default(10),
   CHAT_MESSAGES_PER_DAY: z.coerce.number().int().positive().default(200),
   SESSIONS_PER_HOUR: z.coerce.number().int().positive().default(20),
