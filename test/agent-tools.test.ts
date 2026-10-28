@@ -125,3 +125,36 @@ test("show_form: the model's own field names are mapped to ours", async () => {
   assert.equal(r.shown, 3)
   assert.deepEqual(c.out.form?.questions.map((q) => q.field), ['budget', 'location', 'sector'])
 })
+
+test('compare: all listings on screen unless the message names particular ones', async () => {
+  const { catalog, toListing } = await import('../src/modules/catalog/catalog.service.js')
+  const { namesSpecificListings } = await import('../src/modules/chat/agent/agent.tools.js')
+  const rates = { GEL: 1, USD: 2.6, EUR: 2.9 }
+  const make = (n: number, title: string) =>
+    toListing({ id: `${n}${n}${n}${n}${n}${n}${n}${n}-0000-4000-8000-00000000000${n}`, title, category: 'restaurants', deal_type: 'sale', price: 50000 + n, currency: 'GEL', city: 'Tbilisi', description: 'მოქმედი' }, rates)
+  const three = [make(1, 'იყიდება კაფე ვაკეში'), make(2, 'საკონდიტრო ისანში'), make(3, 'ლუდის მაღაზია საბურთალოზე')]
+  const s = { ...ctx().s, rates, listings: three, byId: new Map(three.map((l) => [l.id, l])), byShortId: new Map(three.map((l) => [l.shortId, l])), stats: new Map() } as unknown as ToolContext['s']
+  const original = catalog.fetch
+  catalog.fetch = async (_s, ref) => {
+    const l = three.find((x) => ref.startsWith(x.shortId) || ref === x.id)
+    return l ? { snapshot: s, listing: l } : 'unavailable'
+  }
+  const run = async (userText: string, refs: string[]) => {
+    const c = { ...ctx(), s, userText, state: { ...ctx().state, lastShown: three.map((l) => l.id) } }
+    await runTool('compare_listings', { refs }, c)
+    return c.out.cards.map((x) => x.title)
+  }
+  try {
+    // The model passed only two, but the client asked about all of them.
+    assert.equal((await run('მომეცი შედარების სტატისტიკა', [three[0]!.shortId, three[1]!.shortId])).length, 3)
+    assert.equal((await run('Compare them, pros and cons and scores', [])).length, 3)
+    // The client named two.
+    assert.equal((await run('შეადარე პირველი და მეორე', [three[0]!.shortId, three[1]!.shortId])).length, 2)
+    assert.equal((await run('ლუდის მაღაზია და კაფე შეადარე', [three[2]!.shortId, three[0]!.shortId])).length, 2)
+  } finally {
+    catalog.fetch = original
+  }
+  assert.equal(namesSpecificListings('რომელი ჯობია?', three), false)
+  assert.equal(namesSpecificListings('compare #1 and #3', three), true)
+  assert.equal(namesSpecificListings('Сравни оба', three), true)
+})

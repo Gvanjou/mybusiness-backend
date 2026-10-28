@@ -108,6 +108,7 @@ export async function agentTurn(params: { session: Session; input: SendMessage; 
     state,
     out,
     progress: (step, count) => emit('status', count === undefined ? { step } : { step, count }),
+    userText,
   }
   const toolResults: unknown[] = []
   const calledTools: string[] = []

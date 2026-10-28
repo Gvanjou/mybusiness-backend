@@ -40,6 +40,7 @@ export type ToolContext = {
   state: SessionState
   out: ToolOutput
   progress: (step: string, count?: number) => Promise<void>
+  userText?: string // the client's message this turn, for tools that must honour what it names
 }
 
 const GOALS = ['passive_income', 'own_job', 'growth', 'diversification', 'unsure'] as const
@@ -80,8 +81,9 @@ export const toolDeclarations: FunctionDeclaration[] = [
   },
   {
     name: 'compare_listings',
-    description: 'Side-by-side comparison of 2–3 listings (price, size, financials, fit). Shows a comparison table.',
-    parameters: { type: Type.OBJECT, properties: { refs: list(str('Listing id, URL, #N or its title'), '2 to 3 listings') }, required: ['refs'] },
+    description:
+      'Side-by-side comparison of listings (price, size, rent, financials, competition, fit). Shows a comparison table. Omit refs to compare every listing on screen — the default whenever the client asks to compare without naming specific ones.',
+    parameters: { type: Type.OBJECT, properties: { refs: list(str('Listing id, URL, #N or its title'), 'Only the listings the client named; omit for all on screen') } },
   },
   {
     name: 'market_stats',
@@ -346,7 +348,13 @@ const executors: Record<string, Executor> = {
 
   async compare_listings(args, ctx) {
     await ctx.progress('comparing')
-    const refs = ((args.refs as string[] | undefined) ?? []).slice(0, 3)
+    // "Compare them" means all the listings on screen; only a message that names some (by number, title, link,
+    // "the first two"…) narrows it. The model tends to pass two refs even when three were shown.
+    const asked = ((args.refs as string[] | undefined) ?? []).filter((r) => typeof r === 'string' && r.trim())
+    const onScreen = ctx.state.lastShown.filter((id) => ctx.s.byId.has(id))
+    const shownListings = onScreen.map((id) => ctx.s.byId.get(id)!)
+    const all = onScreen.length > asked.length && !namesSpecificListings(ctx.userText ?? '', shownListings)
+    const refs = (all || asked.length === 0 ? onScreen : asked).slice(0, MAX_COMPARE)
     const found: CatalogListing[] = []
     for (const r of refs) {
       const { listing } = await liveRef(ctx, r)
@@ -521,6 +529,24 @@ const executors: Record<string, Executor> = {
     }
     return { shown: questions.length, note: 'The form appears under your reply. If you have not written the short intro yet, write it now; do not repeat the questions.' }
   },
+}
+
+const MAX_COMPARE = 4
+
+// Does the client's message point at particular listings ("the first two", "#2 and #3", a title, a link, "both")?
+// Then a comparison covers only those; otherwise it covers everything on screen.
+export function namesSpecificListings(text: string, shown: CatalogListing[]): boolean {
+  const t = text.toLowerCase()
+  if (/#\s?\d|\b[0-9a-f]{8}\b|mybusiness\.ge/.test(t)) return true
+  // Word edges that work for Georgian and Cyrillic too (\b only knows Latin letters).
+  if (/პირველ|მეორე|მესამე|მეოთხე|ბოლო|ორივე|(?<!\p{L})ამ\s+ორ|(?<!\p{L})ორ\s+(?:ვარიანტ|განცხადებ|ბიზნეს)|(?<!\p{L})(?:first|second|third|fourth|last|both|these two|the two|two of)(?!\p{L})|перв|втор|трет|четв|последн|(?<!\p{L})(?:оба|обе|два|две|двух)(?!\p{L})/u.test(t)) return true
+  const generic = /^(იყიდება|ბიზნესი|ბიზნესის|მოქმედი|თბილისში|ბათუმში|business|for|sale|продажа|бизнес|продается)$/
+  return shown.some((l) =>
+    [l.title.ka, l.title.en, l.title.ru]
+      .filter(Boolean)
+      .flatMap((title) => title!.toLowerCase().split(/[^\p{L}\d]+/u))
+      .some((w) => w.length >= 5 && !generic.test(w) && t.includes(w)),
+  )
 }
 
 // A field name as the model wrote it → one of ours.
