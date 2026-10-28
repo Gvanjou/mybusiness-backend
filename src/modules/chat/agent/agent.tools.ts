@@ -17,6 +17,7 @@ import { toCard, type ListingCard } from '../tools/cards.js'
 import { compareTable, listingFacts, marketFacts, scoreListings } from '../tools/facts.tool.js'
 import { assetClassOf, relaxations, search } from '../tools/search.tool.js'
 import type { QuickReply } from '../planner/planner.service.js'
+import { standardQuestion } from './agent.fallback.js'
 import { intakeFields, type IntakeForm } from './agent.model.js'
 
 // Everything the assistant can do besides talking: listings read live from mybusiness.ge, location and
@@ -519,6 +520,14 @@ const executors: Record<string, Executor> = {
       seen.add(field)
       questions.push({ field, question: String(q.question).slice(0, 200), options })
       if (questions.length === 7) break
+    }
+    // Every form offers the same budget ranges, and asks the kind of business when it is still unknown.
+    const budgetAt = questions.findIndex((q) => q.field === 'budget')
+    const budget = standardQuestion('budget', ctx.locale, ctx.s)
+    if (budgetAt >= 0 && budget) questions[budgetAt] = { ...budget, question: questions[budgetAt]!.question }
+    if (questions.length > 0 && !seen.has('sector') && !has(ctx.profile, 'sectors') && questions.length < 7) {
+      const sector = standardQuestion('sector', ctx.locale, ctx.s)
+      if (sector) questions.push(sector)
     }
     if (questions.length === 0) return { error: `No valid questions (unknown fields: ${dropped.join(', ') || 'none'}; allowed: ${intakeFields.join(', ')}). Call show_form again with these fields, or ask in plain text.` }
     ctx.out.form = {

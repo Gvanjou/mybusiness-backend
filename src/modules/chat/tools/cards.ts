@@ -1,6 +1,7 @@
 import { env } from '../../../pkg/env/env.js'
 import { pick, type Locale } from '../../../shared/i18n/locale.js'
 import { categoryLabel, cityLabel, districtLabel } from '../../catalog/catalog.labels.js'
+import { placeHints } from '../../competition/area.service.js'
 import type { CatalogListing } from '../../catalog/catalog.model.js'
 import { financialsLevel } from '../../catalog/catalog.service.js'
 import { reasonLabel } from '../templates/templates.js'
@@ -74,7 +75,8 @@ export function toCard(l: CatalogListing, locale: Locale, scored?: Scored, usdRa
     coverImage: l.coverImage,
     images: l.images.length ? l.images : l.coverImage ? [l.coverImage] : [],
     priceUsd: l.priceGel !== null && usdRate ? Math.round(l.priceGel / usdRate) : null,
-    district: districtLabel(l.district, locale) || null,
+    // Many listings leave the district empty but name it in the title or text ("ვაკეში").
+    district: districtLabel(l.district ?? placeHints(`${l.title.ka ?? ''} ${l.title.en ?? ''} ${l.description.original}`).neighbourhood, locale) || null,
     area: l.area,
     ownerType: l.ownerType,
     createdAt: l.createdAt,

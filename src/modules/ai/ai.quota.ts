@@ -140,8 +140,8 @@ export const quota = {
   },
 
   // Circuit breaker for slow or overloaded models (503, timeouts). They stay usable, just tried last.
-  // Free-tier overloads last a while: 10 minutes at the back of the line spares the next chats the wait.
-  markUnhealthy(model: string, ms = 10 * 60_000): void {
+  // A busy model goes to the back of the line for a while, so the next chats do not wait on it.
+  markUnhealthy(model: string, ms = 5 * 60_000): void {
     get(model).unhealthyUntil = Date.now() + ms
   },
 

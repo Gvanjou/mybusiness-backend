@@ -1,7 +1,7 @@
 import type { Locale } from '../../../shared/i18n/locale.js'
 import type { CatalogListing } from '../../catalog/catalog.model.js'
 import { catalog, financialsLevel, type CatalogSnapshot } from '../../catalog/catalog.service.js'
-import { categoryLabel, cityLabel } from '../../catalog/catalog.labels.js'
+import { categoryLabel, cityLabel, districtLabel } from '../../catalog/catalog.labels.js'
 import type { Profile, Track } from '../profile/profile.model.js'
 import { assetClassOf, search, type Scored } from './search.tool.js'
 import { listingUrl } from './cards.js'
@@ -104,7 +104,9 @@ export function marketFacts(s: CatalogSnapshot, categories: string[], cities: st
 export function compareTable(listings: CatalogListing[], s: CatalogSnapshot, fits: Map<string, Scored>, locale: Locale) {
   const L = labelsFor(locale)
   const fmt = (n: number | null) => (n === null ? '—' : `${new Intl.NumberFormat('en-US').format(Math.round(n))} ₾`)
-  const yesNo = (b: boolean | null | undefined) => (b === null || b === undefined ? '—' : b ? L.yes : L.no)
+  // Facts only, the same ones the answer is written from. Judgement (pros, cons, score, verdict) is in the text:
+  // a computed "match %" or a count of warning signs from the text alone contradicted it.
+  const money = (m: { min: number; max: number; currency: string } | null | undefined) => (m ? `${m.min === m.max ? fmt(m.min) : `${fmt(m.min)}–${fmt(m.max)}`}${m.currency !== 'GEL' ? ` (${m.currency})` : ''}` : '—')
   const rows: { key: string; label: string; values: string[] }[] = [
     { key: 'price', label: L.price, values: listings.map((l) => (l.priceGel === null ? L.onRequest : fmt(l.priceGel))) },
     {
@@ -117,24 +119,23 @@ export function compareTable(listings: CatalogListing[], s: CatalogSnapshot, fit
         return `${pct > 0 ? '+' : ''}${pct}%`
       }),
     },
-    { key: 'city', label: L.city, values: listings.map((l) => cityLabel(l.city, locale) || '—') },
-    { key: 'model', label: L.model, values: listings.map((l) => L.models[l.insights?.operatingModel ?? 'unknown']) },
-    { key: 'financials', label: L.financials, values: listings.map((l) => L.fin[financialsLevel(l)]) },
-    { key: 'premises', label: L.premises, values: listings.map((l) => L.tenure[l.insights?.premises.tenure ?? 'unknown'] ?? '—') },
+    { key: 'city', label: L.city, values: listings.map((l) => [cityLabel(l.city, locale), l.district ? districtLabel(l.district, locale) : ''].filter(Boolean).join(', ') || '—') },
+    { key: 'area', label: L.area, values: listings.map((l) => (l.area ? `${l.area} m²` : '—')) },
+    { key: 'rent', label: L.rent, values: listings.map((l) => money(l.insights?.premises.rent_monthly)) },
+    { key: 'revenue', label: L.revenue, values: listings.map((l) => money(l.insights?.financials.revenue_monthly)) },
+    { key: 'profit', label: L.profit, values: listings.map((l) => money(l.insights?.financials.profit_monthly)) },
     { key: 'staff', label: L.staff, values: listings.map((l) => (l.insights?.staff.count != null ? String(l.insights.staff.count) : '—')) },
-    { key: 'staff_stays', label: L.staffStays, values: listings.map((l) => yesNo(l.insights?.staff.stays)) },
     { key: 'years', label: L.years, values: listings.map((l) => (l.insights?.yearsOperating != null ? String(l.insights.yearsOperating) : '—')) },
-    { key: 'red_flags', label: L.redFlags, values: listings.map((l) => String(l.insights?.redFlags.length ?? 0)) },
     { key: 'completeness', label: L.completeness, values: listings.map((l) => `${Math.round((l.insights?.completeness ?? 0) * 100)}%`) },
-    { key: 'fit', label: L.fit, values: listings.map((l) => (fits.get(l.id) ? `${Math.round(fits.get(l.id)!.score * 100)}%` : '—')) },
   ]
+  void fits
   return { columns: listings.map((l) => l.id), rows }
 }
 
 function labelsFor(locale: Locale) {
   const t = {
     ka: {
-      price: 'ფასი', vsMedian: 'კატეგორიის მედიანასთან', city: 'ქალაქი', model: 'მართვის ფორმა', financials: 'ფინანსები',
+      price: 'ფასი', vsMedian: 'კატეგორიის მედიანასთან', city: 'მდებარეობა', area: 'ფართობი', rent: 'ქირა თვეში', revenue: 'შემოსავალი თვეში (გამყიდველის)', profit: 'მოგება თვეში (გამყიდველის)', model: 'მართვის ფორმა', financials: 'ფინანსები',
       premises: 'ფართი', staff: 'თანამშრომლები', staffStays: 'პერსონალი რჩება', years: 'მუშაობის წლები', redFlags: 'გამაფრთხილებელი ნიშნები',
       completeness: 'ინფორმაციის სისრულე', fit: 'თქვენთან შესაბამისობა', yes: 'კი', no: 'არა', onRequest: 'შეთანხმებით',
       models: { passive: 'პასიური', semi_passive: 'ნაწილობრივ პასიური', hands_on: 'ყოველდღიური ჩართულობა', unknown: 'უცნობია' },
@@ -142,7 +143,7 @@ function labelsFor(locale: Locale) {
       tenure: { owned: 'საკუთრება', leased: 'იჯარა', included_in_sale: 'შედის ფასში', unknown: 'უცნობია' } as Record<string, string>,
     },
     en: {
-      price: 'Price', vsMedian: 'vs. category median', city: 'City', model: 'How it runs', financials: 'Financials',
+      price: 'Price', vsMedian: 'vs. category median', city: 'Location', area: 'Area', rent: 'Rent / month', revenue: 'Revenue / month (seller)', profit: 'Profit / month (seller)', model: 'How it runs', financials: 'Financials',
       premises: 'Premises', staff: 'Staff', staffStays: 'Staff stays', years: 'Years operating', redFlags: 'Red flags',
       completeness: 'Information completeness', fit: 'Fit for you', yes: 'Yes', no: 'No', onRequest: 'On request',
       models: { passive: 'Passive', semi_passive: 'Semi-passive', hands_on: 'Owner daily', unknown: 'Unknown' },
@@ -150,7 +151,7 @@ function labelsFor(locale: Locale) {
       tenure: { owned: 'Owned', leased: 'Leased', included_in_sale: 'Included', unknown: 'Unknown' } as Record<string, string>,
     },
     ru: {
-      price: 'Цена', vsMedian: 'к медиане категории', city: 'Город', model: 'Формат управления', financials: 'Финансы',
+      price: 'Цена', vsMedian: 'к медиане категории', city: 'Локация', area: 'Площадь', rent: 'Аренда в месяц', revenue: 'Выручка в месяц (продавец)', profit: 'Прибыль в месяц (продавец)', model: 'Формат управления', financials: 'Финансы',
       premises: 'Помещение', staff: 'Персонал', staffStays: 'Персонал остаётся', years: 'Лет работы', redFlags: 'Тревожные признаки',
       completeness: 'Полнота информации', fit: 'Подходит вам', yes: 'Да', no: 'Нет', onRequest: 'По запросу',
       models: { passive: 'Пассивный', semi_passive: 'Частично пассивный', hands_on: 'Ежедневное участие', unknown: 'Неизвестно' },

@@ -42,6 +42,18 @@ export const modelChains: Record<AiTask, readonly string[]> = {
   embedding: ['gemini-embedding-2'],
 }
 
+// Turns that need the strongest reasoning (comparisons, risk, location, profit, which to pick) go to the Flash models
+// first; everything else starts on Flash-Lite, which has 25 times their daily allowance. Auto mode only.
+const HEAVY = /შეადარ|შედარებ|compare|сравн|მოგებ|შემოსავ|profit|прибыл|доход|ანაზღაურ|payback|окупаем|რისკ|risk|риск|ლოკაცი|location|локац|კონკურენც|competit|конкурен|რომელი\s+ჯობია|which (?:one )?is better|какой лучше|ფასი\s+სამართლ|fair price|справедлив|გაანალიზ|analy[sz]|анализ/i
+
+export function chainFor(userText: string): readonly string[] {
+  const all = modelChains.responder
+  if (env.GEMINI_RESPONDER_MODELS.length) return all // an explicit order in .env wins
+  const lite = all.filter((m) => MODEL_INFO[m]?.tier === 'lite')
+  const flash = all.filter((m) => MODEL_INFO[m]?.tier !== 'lite')
+  return HEAVY.test(userText) ? [...flash, ...lite] : [...lite, ...flash]
+}
+
 // The models the chat draws on; their daily allowances make up the total shown in the usage circle.
 export function chatModels(): string[] {
   return [...new Set([...modelChains.responder, ...modelChains.search, ...modelChains.transcribe])]

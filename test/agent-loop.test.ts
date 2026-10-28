@@ -59,7 +59,7 @@ test('tool calls run, their results reach the next step, and the form/profile ev
   assert.equal(calls, 2, 'a step with a non-terminal tool continues; the text-only step ends it')
   assert.equal(r.tokens, 'ჯერ რამდენიმე კითხვა.\n\nშეავსეთ და გავაგრძელოთ.')
   const form = r.of('form')[0] as { questions: { field: string }[]; submitLabel: string }
-  assert.deepEqual(form.questions.map((q) => q.field), ['goal'])
+  assert.deepEqual(form.questions.map((q) => q.field), ['goal', 'sector'], 'the kind of business is asked when still unknown')
   const profile = r.of('profile')[0] as { items: { key: string; value: string }[] }
   assert.ok(profile.items.some((i) => i.key === 'budgetGel' && i.value.includes('50')), 'update_profile applied the budget')
   assert.ok(profile.items.some((i) => i.key === 'involvement'))
@@ -175,14 +175,25 @@ test('a form the model announced but got wrong does not end the turn: the model 
       yield { type: 'done', model: 'stub', parts: [{ text }, { functionCall: c }], calls: [c] }
       return
     }
-    const c = { name: 'show_form', args: { questions: [{ field: 'budget', question: 'ბიუჯეტი?', options: [{ label: '50 000 ₾-მდე' }, { label: '50 000–150 000 ₾' }] }], submit_label: 'OK' } }
+    const c = {
+      name: 'show_form',
+      args: {
+        questions: [
+          { field: 'budget', question: 'ბიუჯეტი?', options: [{ label: '50 000 ₾-მდე' }, { label: '50 000–150 000 ₾' }] },
+          { field: 'experience', question: 'გამოცდილება?', options: [{ label: 'არ მაქვს' }, { label: 'მაქვს' }] },
+        ],
+        submit_label: 'OK',
+      },
+    }
     yield { type: 'done', model: 'stub', parts: [{ functionCall: c }], calls: [c] }
   }
   const r = await run('რა ინფორმაცია გჭირდება?')
   assert.equal(calls, 2, 'the failed form is not accepted as the end of the turn')
-  const form = r.of('form')[0] as { questions: { field: string; options: { value: string }[] }[] }
-  assert.equal(form.questions[0]?.field, 'budget')
-  assert.equal(form.questions[0]?.options[0]?.value, '50 000 ₾-მდე', 'an option with only a label gets it as its value too')
+  const form = r.of('form')[0] as { questions: { field: string; question: string; options: { value: string }[] }[] }
+  assert.deepEqual(form.questions.map((q) => q.field), ['budget', 'experience', 'sector'])
+  assert.equal(form.questions[0]?.question, 'ბიუჯეტი?', 'the model’s wording stays')
+  assert.deepEqual(form.questions[0]?.options.map((o) => o.value), ['30000', '80000', '200000', '600000'], 'every form offers the same budget ranges')
+  assert.equal(form.questions[1]?.options[0]?.value, 'არ მაქვს', 'an option with only a label gets it as its value too')
 })
 
 test('the screenshot case: "შეავსოთ მოკლე კითხვარი" with no form at all → the app shows the form itself', async () => {
@@ -236,4 +247,29 @@ test('a picked model already used up today is refused at once, without calling i
   }
   await assert.rejects(run('გამარჯობა', 'gemini-3.7-flash'), (err: AppError) => err.code === 'model_unavailable' && err.details?.reason === 'limit')
   assert.equal(called, false)
+})
+
+test('a turn that fails keeps the message as unanswered; the retry replaces it instead of adding it twice', async () => {
+  stored.length = 0
+  script = null // no model answers
+  await assert.rejects(run('კომერციულ ფართს ვეძებ ვაკეში'))
+  const failed = stored.at(-1) as { role: string; content: string; payload?: { failed?: boolean } }
+  assert.deepEqual([failed.role, failed.content, failed.payload?.failed], ['user', 'კომერციულ ფართს ვეძებ ვაკეში', true])
+
+  const deleted: number[] = []
+  const recent = chatRepository.recentMessages
+  const del = chatRepository.deleteMessage
+  chatRepository.recentMessages = async () => [{ id: 41, role: 'user', content: 'კომერციულ ფართს ვეძებ ვაკეში', intent: 'failed', payload: { failed: true }, createdAt: '' }]
+  chatRepository.deleteMessage = async (_s, id) => void deleted.push(id)
+  try {
+    script = async function* () {
+      yield { type: 'text', text: 'რისთვის გჭირდებათ ფართი?' }
+      yield { type: 'done', model: 'stub', parts: [{ text: 'რისთვის გჭირდებათ ფართი?' }], calls: [] }
+    }
+    await run('კომერციულ ფართს ვეძებ ვაკეში')
+    assert.deepEqual(deleted, [41])
+  } finally {
+    chatRepository.recentMessages = recent
+    chatRepository.deleteMessage = del
+  }
 })

@@ -91,6 +91,11 @@ export const chatRepository = {
     return Number(data.id)
   },
 
+  async deleteMessage(sessionId: string, id: number): Promise<void> {
+    const { error } = await db.from('chat_messages').delete().eq('id', id).eq('session_id', sessionId)
+    if (error) throw error
+  },
+
   async recentMessages(sessionId: string, limit: number): Promise<StoredMessage[]> {
     const { data, error } = await db
       .from('chat_messages')

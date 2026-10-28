@@ -8,8 +8,9 @@ import type { IntakeForm } from './agent.model.js'
 // What the reply promised must be on screen. When the model writes "fill in the questions below" but no valid form
 // came with it, or "here are the options" without searching, the app delivers it itself — whatever the model did.
 
-// "Fill in the form / questionnaire / these questions" in Georgian, English or Russian.
-const PROMISES_FORM = /ფორმ|კითხვარ|ქვემოთ\s+(?:მოცემულ|მოყვანილ)?\s*კითხვ|\bform\b|questionnaire|questions below|анкет|форм[уаы]|вопросы ниже/i
+// An invitation to fill something in ("შეავსეთ კითხვარი", "fill in the form", "заполните анкету") — not just any
+// mention of questions ("questions to ask the seller" is not a form).
+const PROMISES_FORM = /შეავს(?:ე|ოთ|ებ)|(?:უპასუხე|უპასუხოთ)[^.?!\n]{0,40}კითხვ|fill (?:in|out)|answer (?:these|the following|a few) (?:short )?questions|заполн|ответьте на (?:несколько )?вопрос/i
 // "Let's look at the options / here are the listings" — a promise of listings, not just any action.
 const PROMISES_LISTINGS = /ვარიანტ|განცხადებ|შეთავაზებ|\boptions\b|\blistings\b|businesses for sale|вариант|объявлен|предложени/i
 
@@ -48,19 +49,32 @@ function topBy(s: CatalogSnapshot, key: 'city' | 'category', n: number): string[
   return [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, n).map(([v]) => v)
 }
 
+// One standard question, with our own options: the budget ranges, the answers for goal, time, experience and risk,
+// and the most common cities and business types on the site right now.
+function questionFor(q: (typeof ORDER)[number], locale: Locale, s: CatalogSnapshot): IntakeForm['questions'][number] | null {
+  const def = questions.find((x) => x.id === q.id)
+  if (!def) return null
+  let options: { value: string; label: string }[]
+  if (q.id === 'location') options = [...topBy(s, 'city', 4).map((c) => ({ value: c, label: cityLabel(c, locale) })), { value: 'any', label: pick(ANY, locale) }]
+  else if (q.id === 'sector') options = [...topBy(s, 'category', 5).map((c) => ({ value: c, label: categoryLabel(c, locale) })), { value: 'any', label: pick(ANY, locale) }]
+  else options = (def.options ?? []).map((o) => ({ value: q.value(o.patch as Record<string, unknown>), label: pick(o.label, locale) }))
+  return options.length >= 2 ? { field: q.field, question: pick(def.ask, locale), options: options.slice(0, 6) } : null
+}
+
+// The standard version of one form field, so every form offers the same budget ranges and a real list of business
+// types (the model's own options vary from run to run).
+export function standardQuestion(field: 'budget' | 'sector', locale: Locale, s: CatalogSnapshot): IntakeForm['questions'][number] | null {
+  const q = ORDER.find((x) => x.field === field)
+  return q ? questionFor(q, locale, s) : null
+}
+
 // The intake form for what the profile still lacks, built without a model. null when nothing is missing.
 export function defaultIntakeForm(profile: Profile, locale: Locale, s: CatalogSnapshot): IntakeForm | null {
   const out: IntakeForm['questions'] = []
   for (const q of ORDER) {
     if (q.known(profile)) continue
-    const def = questions.find((x) => x.id === q.id)
-    if (!def) continue
-    let options: { value: string; label: string }[]
-    if (q.id === 'location') options = [...topBy(s, 'city', 4).map((c) => ({ value: c, label: cityLabel(c, locale) })), { value: 'any', label: pick(ANY, locale) }]
-    else if (q.id === 'sector') options = [...topBy(s, 'category', 5).map((c) => ({ value: c, label: categoryLabel(c, locale) })), { value: 'any', label: pick(ANY, locale) }]
-    else options = (def.options ?? []).map((o) => ({ value: q.value(o.patch as Record<string, unknown>), label: pick(o.label, locale) }))
-    if (options.length < 2) continue
-    out.push({ field: q.field, question: pick(def.ask, locale), options: options.slice(0, 6) })
+    const question = questionFor(q, locale, s)
+    if (question) out.push(question)
     if (out.length === 5) break
   }
   return out.length ? { title: pick(TITLE, locale), questions: out, noteLabel: pick(NOTE, locale), submitLabel: pick(SUBMIT, locale) } : null

@@ -3,7 +3,7 @@ import { formatGel, pick, type Locale } from '../../../shared/i18n/locale.js'
 import { logger, errorFields } from '../../../shared/logger/logger.js'
 import { AppError } from '../../../shared/http/app-error.js'
 import { ai } from '../../ai/ai.gateway.js'
-import { chatModels, MODEL_INFO, modelChains } from '../../ai/ai.models.js'
+import { chainFor, chatModels, MODEL_INFO, modelChains } from '../../ai/ai.models.js'
 import { quota } from '../../ai/ai.quota.js'
 import { categoryLabel } from '../../catalog/catalog.labels.js'
 import { catalog } from '../../catalog/catalog.service.js'
@@ -13,7 +13,7 @@ import { looksLikeCode, screenMessage } from '../guard/guard.service.js'
 import { optionPatch, showResultsReply, type QuickReply } from '../planner/planner.service.js'
 import type { QuestionId } from '../planner/planner.questions.js'
 import { applyPatch } from '../profile/profile.merge.js'
-import { val } from '../profile/profile.model.js'
+import { has, val } from '../profile/profile.model.js'
 import { detectLanguage } from '../router/router.rules.js'
 import { entryQuickReplies, profileItems, texts } from '../templates/templates.js'
 import { collectNumbers, validateReply } from '../validator/validator.service.js'
@@ -88,7 +88,11 @@ export async function agentTurn(params: { session: Session; input: SendMessage; 
   }
 
   // 3. The conversation so far, as text (tool calls from earlier turns are not replayed).
-  const history = await chatRepository.recentMessages(session.id, HISTORY + 2)
+  const loaded = await chatRepository.recentMessages(session.id, HISTORY + 2)
+  // A retry replaces the unanswered copy of the message, so it is not in the conversation twice.
+  const lastFailed = loaded.at(-1)
+  if (lastFailed?.role === 'user' && lastFailed.payload.failed) await chatRepository.deleteMessage(session.id, lastFailed.id)
+  const history = loaded.filter((m) => !m.payload.failed)
   const contents: Content[] = [
     ...history
       .filter((m) => m.content)
@@ -118,6 +122,7 @@ export async function agentTurn(params: { session: Session; input: SendMessage; 
   const only = input.model && input.model !== 'auto' && modelChains.responder.includes(input.model) ? input.model : undefined
   if (only && quota.status(only).status === 'limit') {
     if (input.form) await chatRepository.saveSession({ ...session, locale, profile, state })
+    await keepFailed(session.id, userText)
     throw modelUnavailable(only)
   }
   const justClicked = clickedKey(state.nextShown, userText)
@@ -126,6 +131,9 @@ export async function agentTurn(params: { session: Session; input: SendMessage; 
   const stepSignal = AbortSignal.any([signal, stop.signal])
   let reply = ''
   let model: string | undefined
+  let continuing = false // the previous step was cut at the output limit: this one carries on the same sentence
+  // Auto: Flash-Lite first for quick questions, the Flash models first for comparisons, risk, location and profit.
+  const chain = only ? undefined : chainFor(userText)
 
   try {
     for (let step = 0; step < MAX_STEPS; step++) {
@@ -141,8 +149,8 @@ export async function agentTurn(params: { session: Session; input: SendMessage; 
       const system = agentSystem(locale, agentContext(ctx))
       const filter = createTextFilter()
       let stepText = ''
-      let result: { parts: Part[]; calls: { name?: string; args?: Record<string, unknown> }[] } | undefined
-      for await (const ev of ai.agentStep({ system, contents, tools, signal: stepSignal, sessionId: session.id, maxWaitMs: 2_000, prefer: model, only, budgetMs: left })) {
+      let result: { parts: Part[]; calls: { name?: string; args?: Record<string, unknown> }[]; cut?: boolean } | undefined
+      for await (const ev of ai.agentStep({ system, contents, tools, signal: stepSignal, sessionId: session.id, maxWaitMs: 2_000, prefer: model, only, chain, budgetMs: left })) {
         if (ev.type === 'done') {
           result = ev
           model = ev.model
@@ -162,7 +170,7 @@ export async function agentTurn(params: { session: Session; input: SendMessage; 
           stop.abort()
           break
         }
-        const text = reply && !stepText ? `\n\n${visible}` : visible
+        const text = reply && !stepText && !continuing ? `\n\n${visible}` : visible
         stepText += visible
         reply += text
         await emit('token', { text })
@@ -175,6 +183,14 @@ export async function agentTurn(params: { session: Session; input: SendMessage; 
       }
       if (options.length && out.quickReplies.length === 0) out.quickReplies = options.slice(0, 4).map((o, i) => ({ kind: 'message', id: `ai:${i}`, label: o, text: o }))
       if (stop.signal.aborted || !result) break
+      // Google stopped at the output limit mid-answer: continue the same answer in the next step.
+      continuing = false
+      if (result.cut && result.calls.length === 0 && !last) {
+        logger.info('answer cut at the output limit; continuing', { session: session.id, step })
+        contents.push({ role: 'model', parts: result.parts }, { role: 'user', parts: [{ text: CONTINUE }] })
+        continuing = true
+        continue
+      }
       if (result.calls.length === 0) {
         // A reply that ends by announcing a search or check ("let's see what is available…") without doing it
         // leaves the client waiting for nothing: have the model do it now and continue the same answer.
@@ -213,7 +229,7 @@ export async function agentTurn(params: { session: Session; input: SendMessage; 
     } else if (!reply) {
       // Nothing written (no model, or the budget ran out). Form answers already gathered are kept.
       logger.warn('agent produced nothing', { session: session.id, ...errorFields(err) })
-      return unavailable(session, profile, state, locale, only)
+      return unavailable(session, profile, state, locale, only, userText)
     } else {
       logger.warn('agent failed mid-reply', errorFields(err))
       const note = `${reply ? '\n\n' : ''}${pick(texts.cutOff, locale)}`
@@ -225,7 +241,11 @@ export async function agentTurn(params: { session: Session; input: SendMessage; 
   // What the reply promised is on screen, whatever the model did: a form it announced but never delivered (or got
   // wrong) is built here from what the profile still lacks; listings it announced without searching are searched.
   if (!signal.aborted && !stop.signal.aborted && reply.trim()) {
-    if (!out.form && promisesForm(reply)) {
+    // A form only early on (budget, goal or time still unknown) and never on a turn that worked on listings: a
+    // location or comparison answer that mentions questions is not a questionnaire.
+    const early = !has(ctx.profile, 'budgetGel') || !(has(ctx.profile, 'goal') || has(ctx.profile, 'involvement'))
+    const listingWork = calledTools.some((t) => ['search_listings', 'get_listing', 'analyze_listing', 'location_analysis', 'compare_listings', 'calculate', 'market_stats'].includes(t))
+    if (!out.form && early && !listingWork && promisesForm(reply)) {
       out.form = defaultIntakeForm(ctx.profile, locale, ctx.s)
       if (out.form) logger.info('form promised but not delivered; the app built it', { session: session.id })
     } else if (!out.form && !out.cards.length && !calledTools.includes('search_listings') && promisesListings(reply) && announcesAction(reply)) {
@@ -242,7 +262,7 @@ export async function agentTurn(params: { session: Session; input: SendMessage; 
     const line = out.form ? pick(texts.formIntro, locale) : out.cards.length ? pick(texts.resultsIntro, locale) : ''
     if (!line) {
       logger.warn('agent wrote nothing', { session: session.id })
-      return unavailable(session, profile, state, locale, only)
+      return unavailable(session, profile, state, locale, only, userText)
     }
     reply = line
     await emit('token', { text: line })
@@ -278,6 +298,8 @@ export async function agentTurn(params: { session: Session; input: SendMessage; 
   await emit('done', { messageId, model: model ? (MODEL_INFO[model]?.name ?? model) : undefined })
 }
 
+const CONTINUE = '(Instruction from the app, not from the client.) Your answer was cut off by the length limit. Continue exactly where it stopped, mid-sentence if needed, without repeating anything.'
+
 const DO_IT_NOW =
   '(Instruction from the app, not from the client.) Your reply ended by announcing something you did not do (a search, a check, or a form to fill in). Do it now: call the tool (show_form for a form; search_listings, location_analysis, compare_listings… for the rest), then continue the answer with the result. Do not repeat what you already wrote.'
 
@@ -288,6 +310,11 @@ const ANNOUNCES =
 export function announcesAction(text: string): boolean {
   const tail = text.trim().slice(-220)
   return tail.length > 0 && !tail.endsWith('?') && ANNOUNCES.test(tail)
+}
+
+// The message stays in the conversation, marked as unanswered, so the client sees what they wrote and can retry.
+async function keepFailed(sessionId: string, userText: string): Promise<void> {
+  await chatRepository.addMessage(sessionId, { role: 'user', content: userText, intent: 'failed', payload: { failed: true } }).catch((err) => logger.warn('could not keep the failed message', errorFields(err)))
 }
 
 function modelUnavailable(model: string): AppError {
@@ -305,8 +332,9 @@ function titleFrom(text: string): string {
 
 // No answer this time: keep what the user told us and let the UI offer a retry — or, when the client picked a model,
 // say which one and why, so the UI can offer to switch.
-async function unavailable(session: Session, profile: Session['profile'], state: Session['state'], locale: Locale, only?: string): Promise<never> {
+async function unavailable(session: Session, profile: Session['profile'], state: Session['state'], locale: Locale, only: string | undefined, userText: string): Promise<never> {
   await chatRepository.saveSession({ ...session, locale, profile, state })
+  await keepFailed(session.id, userText)
   if (only) throw modelUnavailable(only)
   const { used, total } = quota.usage(chatModels())
   if (total && used >= total) throw new AppError('daily_limit', 'Today’s free AI allowance is used up. It renews when Google resets the daily limits.')

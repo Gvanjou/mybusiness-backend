@@ -79,7 +79,11 @@ export function textInsights(p: {
   }
   const revenue = p.site.revenueMonthly ? money(p.site.revenueMonthly, cur, 'monthly revenue field on mybusiness.ge') : monthly('revenue')
   const profit = p.site.incomeMonthly ? money(p.site.incomeMonthly, cur, 'monthly income field on mybusiness.ge') : monthly('profit')
-  const rentIncome = monthly('rent')
+  // "Rent 3 000 ₾" in a business listing is what the business pays for its premises; only property earns rent.
+  const isProperty = ['real_estate', 'commercial_space', 'offices', 'warehouse', 'land'].includes(p.category)
+  const rent = monthly('rent')
+  const rentIncome = isProperty ? rent : null
+  const rentPaid = isProperty ? null : rent
   const onRequest = ON_REQUEST.test(text)
 
   // The same text often appears in two or three languages: keep each fact once.
@@ -140,7 +144,7 @@ export function textInsights(p: {
     operatingModel: 'unknown',
     skills: [],
     financials: { revenue_monthly: revenue, profit_monthly: profit, rent_income_monthly: rentIncome, other_figures: onRequest ? ['detailed financials (P&L) available on request'] : [] },
-    premises: { tenure, rent_monthly: null, lease_terms: null, area_m2: null },
+    premises: { tenure: rentPaid && tenure === 'unknown' ? 'leased' : tenure, rent_monthly: rentPaid, lease_terms: null, area_m2: null },
     staff: { count: staff, stays: null },
     includedAssets: included,
     locationHint: null,

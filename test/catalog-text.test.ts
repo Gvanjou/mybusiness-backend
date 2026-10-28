@@ -52,3 +52,15 @@ test('streets and neighbourhoods are read from the listing title and description
   assert.deepEqual(placeHints('Кафе, ул. Абашидзе 56, Ваке'), { streets: ['ул. Абашидзе 56'], neighbourhood: 'Vake' })
   assert.deepEqual(placeHints('მოქმედი ბიზნესი, კარგი შემოსავლით'), { streets: [], neighbourhood: null })
 })
+
+test('rent in a business listing is what the business pays, not income; only property earns rent', async () => {
+  const { textInsights } = await import('../src/modules/catalog/catalog.text.js')
+  const { financialsLevel } = await import('../src/modules/catalog/catalog.service.js')
+  const site = { employees: null, yearEstablished: null, revenueMonthly: null, incomeMonthly: null, currency: 'GEL' }
+  const cafe = textInsights({ category: 'bakery', dealType: 'sale', texts: ['იყიდება საკონდიტრო. ქირა თვეში 3000 ლარი.'], site, hasLocation: true, priceKnown: true })
+  assert.equal(cafe.premises.rent_monthly?.min, 3000)
+  assert.equal(cafe.financials.rent_income_monthly, null)
+  assert.equal(financialsLevel({ insights: cafe } as never), 'none', 'rent alone is not "financials stated"')
+  const space = textInsights({ category: 'commercial_space', dealType: 'sale', texts: ['იყიდება ფართი, ქირით გაცემულია, ქირა თვეში 3000 ლარი.'], site, hasLocation: true, priceKnown: true })
+  assert.equal(space.financials.rent_income_monthly?.min, 3000)
+})

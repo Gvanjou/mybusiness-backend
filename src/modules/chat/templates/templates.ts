@@ -18,9 +18,9 @@ export const texts = {
   ),
   // Off-topic, with a way back to where the conversation was ({resume} from the profile).
   offTopicResume: t(
-    'სამწუხაროდ, ამ საკითხზე ვერ დაგეხმარებით — ეს ჩატი ბიზნესის შერჩევას, შეფასებასა და შეძენას ეხება. დავუბრუნდეთ თქვენს ძიებას: {resume}?',
-    "I'm afraid I can't help with that here — in this chat I only help with choosing, evaluating and buying a business. Shall we get back to your search: {resume}?",
-    'К сожалению, с этим я здесь не помогу — в этом чате я помогаю только с выбором, оценкой и покупкой бизнеса. Вернёмся к вашему поиску: {resume}?',
+    'სამწუხაროდ, ამ საკითხზე ვერ დაგეხმარებით — ეს ჩატი ბიზნესის შერჩევას, შეფასებასა და შეძენას ეხება. გავაგრძელოთ თქვენი ძიება ({resume})?',
+    "I'm afraid I can't help with that here — in this chat I only help with choosing, evaluating and buying a business. Shall we continue your search ({resume})?",
+    'К сожалению, с этим я здесь не помогу — в этом чате я помогаю только с выбором, оценкой и покупкой бизнеса. Продолжим ваш поиск ({resume})?',
   ),
   offTopic: t(
     'სამწუხაროდ, ამ საკითხზე ვერ დაგეხმარებით — ეს ჩატი ბიზნესის შერჩევას, შეფასებასა და ყიდვა-გაყიდვას ეხება. რით დავიწყოთ?',

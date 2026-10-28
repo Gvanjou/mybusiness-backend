@@ -18,12 +18,14 @@ type Outcome = 'ok' | 'rate_limited' | 'error' | 'fallback'
 
 // prefer: try this model first (an agent's later steps must stay on the model that started the answer).
 // only: the client picked this model: use it and nothing else, so a busy or used-up model is reported, not hidden.
-type CallMeta = { sessionId?: string; maxWaitMs?: number; userSignal?: AbortSignal; prefer?: string; only?: string }
+// chain: this call's own model order (e.g. light models first for a quick question).
+type CallMeta = { sessionId?: string; maxWaitMs?: number; userSignal?: AbortSignal; prefer?: string; only?: string; chain?: readonly string[] }
 
 // Per-call limits: a model slower than this is skipped in favour of the next one in the chain.
 // For the responder it is the time to the FIRST streamed chunk.
-// A healthy Flash model starts answering within 2–5 s; one that has not after 8 s is overloaded and the next one is faster.
-const callTimeoutMs: Record<AiTask, number> = { responder: 8_000, search: 25_000, transcribe: 25_000, embedding: 15_000 }
+// Time for a model to start answering. With the system prompt, the conversation and tool results a Flash or Flash-Lite
+// model needs 3–10 s; one that has not started after 15 s is overloaded and the next one is faster.
+const callTimeoutMs: Record<AiTask, number> = { responder: 15_000, search: 25_000, transcribe: 25_000, embedding: 15_000 }
 const STREAM_TOTAL_TIMEOUT_MS = 90_000
 // Once a stream has started, only silence ends it: a model still sending text or a tool call is never cut.
 const STREAM_IDLE_TIMEOUT_MS = 15_000
@@ -86,7 +88,7 @@ function isOverloaded(err: unknown): boolean {
 // Overload errors are retried on the same model with backoff (more patiently for background jobs);
 // quota (429) and other retryable errors move straight to the next model.
 async function withFallback<T>(task: AiTask, meta: CallMeta, call: (model: string) => Promise<T>): Promise<T> {
-  const chain = modelChains[task]
+  const chain = meta.chain ?? modelChains[task]
   const maxWaitMs = meta.maxWaitMs ?? 3_000
   // Someone is waiting in the chat: a busy model is not retried, the next one is tried at once. Jobs can wait.
   const overloadRetries = meta.sessionId ? 0 : 3
@@ -112,7 +114,9 @@ async function withFallback<T>(task: AiTask, meta: CallMeta, call: (model: strin
         logger.warn('gemini call failed', { task, model, status, attempt, ...errorFields(err) })
         if (meta.userSignal?.aborted) throw err // the user left; don't try other models
         if (!isRetryable(err)) throw err
-        if (isOverloaded(err) || isTimeout(err)) quota.markUnhealthy(model)
+        // A 503 means Google is overloaded for a while; a slow start may be a one-off.
+        if (isOverloaded(err)) quota.markUnhealthy(model, 5 * 60_000)
+        else if (isTimeout(err)) quota.markUnhealthy(model, 2 * 60_000)
         // A timeout already cost a lot of time: go to the next model instead of waiting again.
         if (!isOverloaded(err) || attempt >= overloadRetries) break
         await sleep((meta.sessionId ? 600 : 2_000) * 2 ** attempt)
@@ -191,7 +195,7 @@ export const ai = {
   // budgetMs caps the whole step, so a slow model cannot eat the turn.
   async *agentStep(
     params: { system: string; contents: Content[]; tools: FunctionDeclaration[]; signal?: AbortSignal; budgetMs?: number } & CallMeta,
-  ): AsyncGenerator<{ type: 'text'; text: string } | { type: 'done'; model: string; parts: Part[]; calls: FunctionCall[] }> {
+  ): AsyncGenerator<{ type: 'text'; text: string } | { type: 'done'; model: string; parts: Part[]; calls: FunctionCall[]; cut?: boolean }> {
     const task = 'responder' as const
     // budgetMs limits how long we wait for a model to START answering; a started answer may run to the hard cap.
     const startBy = Date.now() + Math.min(params.budgetMs ?? STREAM_TOTAL_TIMEOUT_MS, STREAM_TOTAL_TIMEOUT_MS)
@@ -208,7 +212,8 @@ export const ai = {
             systemInstruction: params.system,
             tools: params.tools.length ? [{ functionDeclarations: params.tools }] : undefined,
             temperature: 0.5,
-            maxOutputTokens: 1600,
+            // Georgian text takes many tokens per word: a full comparison needs room. A cut answer is continued.
+            maxOutputTokens: 6_000,
             thinkingConfig: { thinkingLevel: thinkingByTask[task] },
             abortSignal: signal,
           },
@@ -222,8 +227,10 @@ export const ai = {
 
     const parts: Part[] = []
     let usage: { promptTokenCount?: number; candidatesTokenCount?: number } | undefined
+    let finish: string | undefined
     const take = (chunk: GenerateContentResponse) => {
       usage = chunk.usageMetadata ?? usage
+      finish = chunk.candidates?.[0]?.finishReason ?? finish
       const texts: string[] = []
       for (const part of chunk.candidates?.[0]?.content?.parts ?? []) {
         parts.push(part)
@@ -251,7 +258,8 @@ export const ai = {
       logger.warn('agent step failed after streaming; using the partial answer', { model: stream.model, ...errorFields(err) })
     }
     const calls = parts.flatMap((p) => (p.functionCall ? [p.functionCall] : []))
-    yield { type: 'done', model: stream.model, parts, calls }
+    // cut: Google stopped at the output limit mid-answer; the caller continues it.
+    yield { type: 'done', model: stream.model, parts, calls, cut: finish === 'MAX_TOKENS' }
   },
 
   // A short answer from Gemini with Google Search, plus the pages it used.
