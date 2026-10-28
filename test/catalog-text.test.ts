@@ -42,3 +42,13 @@ test('takes stated monthly figures, never the asking price, and prefers the site
   assert.equal(i.premises.tenure, 'leased')
   assert.equal(i.staff.count, 4)
 })
+
+test('streets and neighbourhoods are read from the listing title and description, in three languages', async () => {
+  const { placeHints } = await import('../src/modules/competition/area.service.js')
+  assert.deepEqual(placeHints('ვაკეში, ჭავჭავაძის 16'), { streets: ['ჭავჭავაძის 16'], neighbourhood: 'Vake' })
+  assert.deepEqual(placeHints('ნიკოლოზ ბერძენიშვილის ქუჩა'), { streets: ['ბერძენიშვილის ქუჩა'], neighbourhood: null })
+  assert.deepEqual(placeHints('იყიდება რესტორნის ბიზნესი თბილისში, ისანში'), { streets: [], neighbourhood: 'Isani' })
+  assert.deepEqual(placeHints('Cafe on Chavchavadze Avenue 37 in Vake'), { streets: ['Chavchavadze Avenue 37'], neighbourhood: 'Vake' })
+  assert.deepEqual(placeHints('Кафе, ул. Абашидзе 56, Ваке'), { streets: ['ул. Абашидзе 56'], neighbourhood: 'Vake' })
+  assert.deepEqual(placeHints('მოქმედი ბიზნესი, კარგი შემოსავლით'), { streets: [], neighbourhood: null })
+})

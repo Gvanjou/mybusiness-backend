@@ -1,5 +1,5 @@
 import { env } from '../../pkg/env/env.js'
-import type { Locale } from '../../shared/i18n/locale.js'
+import { pick, type Locale } from '../../shared/i18n/locale.js'
 import { logger, errorFields } from '../../shared/logger/logger.js'
 import { ai } from '../ai/ai.gateway.js'
 import { categoryLabel, cityLabel, districtLabel } from '../catalog/catalog.labels.js'
@@ -22,6 +22,8 @@ export type Located = { lat: number; lon: number; precision: Precision; label: s
 // Coordinates this close to the city centre, or rounded to 4 decimals (~10 m), are the site's default pin for
 // the city or district, not a pin the seller placed on the business.
 const CITY_PIN_M = 400
+// A street match farther than this from the neighbourhood the seller names is the same name elsewhere in the city.
+const NEIGHBOURHOOD_M = 2_500
 const decimals = (x: number) => (String(x).split('.')[1] ?? '').length
 const isDefaultPin = (lat: number, lon: number) => decimals(lat) <= 4 && decimals(lon) <= 4
 const REPORT_TTL_MS = 7 * 86_400_000
@@ -36,8 +38,48 @@ const clean = (x: string | null | undefined) =>
     .find((part) => /\p{L}{3,}/u.test(part))
     ?.slice(0, 120) ?? ''
 
+// Tbilisi and Batumi neighbourhoods as sellers write them ("ვაკეში", "საბურთალოზე", "in Saburtalo"):
+// stem → the name a map search understands.
+const NEIGHBOURHOODS: [RegExp, string][] = [
+  [/ვაკ[ეი]|\bvake\b|ваке/i, 'Vake'],
+  [/საბურთალ|saburtalo|сабуртало/i, 'Saburtalo'],
+  [/ისან[იში]|\bisani\b|исани/i, 'Isani'],
+  [/დიდუბ|didube|дидубе/i, 'Didube'],
+  [/ნაძალადევ|nadzaladevi|надзаладеви/i, 'Nadzaladevi'],
+  [/გლდან|gldani|глдани/i, 'Gldani'],
+  [/ჩუღურეთ|chughureti|чугурети/i, 'Chughureti'],
+  [/მთაწმინდ|mtatsminda|мтацминда/i, 'Mtatsminda'],
+  [/კრწანის|krtsanisi|крцаниси/i, 'Krtsanisi'],
+  [/სამგორ|samgori|самгори/i, 'Samgori'],
+  [/დიღომ|dighomi|дигоми/i, 'Dighomi'],
+  [/ვარკეთილ|varketili|варкетили/i, 'Varketili'],
+  [/ვაზისუბ|vazisubani|вазисубани/i, 'Vazisubani'],
+  [/ორთაჭალ|ortachala|ортачала/i, 'Ortachala'],
+  [/ავლაბარ|avlabari|авлабари/i, 'Avlabari'],
+  [/სოლოლაკ|sololaki|сололаки/i, 'Sololaki'],
+  [/მარჯანიშვილ|marjanishvili|марджанишвили/i, 'Marjanishvili'],
+  [/დელის|delisi|делиси/i, 'Delisi'],
+  [/ბაგებ|bagebi|багеби/i, 'Bagebi'],
+  [/ლილო|lilo\b|лило/i, 'Lilo'],
+]
+
+// Streets and neighbourhoods the seller writes in the title or description, most precise first:
+// "ჭავჭავაძის 16", "ბერძენიშვილის ქუჩა", "Chavchavadze Ave 37", "ул. Абашидзе 56", then "ვაკეში".
+export function placeHints(text: string): { streets: string[]; neighbourhood: string | null } {
+  const streets = new Set<string>()
+  const patterns = [
+    /([ა-ჰ]{3,}(?:ის)?\s+(?:ქუჩა|ქ\.|გამზირი|გამზ\.|ჩიხი|შესახვევი|მოედანი|აღმართი|სანაპირო)(?:\s*(?:N|№)?\s*\d{1,4}[ა-ჰa-z]?)?)/g,
+    /([ა-ჰ]{3,}ის)\s+(?:N|№)?\s*(\d{1,4}[ა-ჰa-z]?)\b/g,
+    /([A-Z][a-z]{3,}(?:\s+[A-Z][a-z]+)?\s+(?:Street|St\.?|Avenue|Ave\.?|Square)(?:\s+\d{1,4})?)/g,
+    /((?:ул\.|улица|пр\.|проспект)\s+[А-ЯЁ][а-яё]+(?:\s+\d{1,4})?)/g,
+  ]
+  for (const re of patterns) for (const m of text.matchAll(re)) streets.add(m[2] ? `${m[1]} ${m[2]}` : m[1]!)
+  const neighbourhood = NEIGHBOURHOODS.find(([re]) => re.test(text))?.[1] ?? null
+  return { streets: [...streets].slice(0, 3), neighbourhood }
+}
+
 // The most precise place we can get for a listing: real coordinates, then the written address, then a place
-// the seller names in the description (hint), then the district, then the city.
+// named in the title or description (or a hint from the model), then the district, then the city.
 export async function locateListing(l: CatalogListing, hint?: string): Promise<Located | null> {
   const city = l.city ? cityLabel(l.city, 'en') : null
   const cityCentre = city ? await geocode(`${city}, Georgia`) : null
@@ -52,10 +94,20 @@ export async function locateListing(l: CatalogListing, hint?: string): Promise<L
   const tries: [string, Precision][] = []
   if (address && !cityWords.some((c) => address.toLowerCase() === c.toLowerCase())) tries.push([address, 'street'])
   if (hint?.trim()) tries.push([hint.trim(), 'street'])
-  if (l.district) tries.push([districtLabel(l.district, 'en'), 'district'])
+  // Many sellers leave the address field as just the city and write the street in the title ("ვაკეში, ჭავჭავაძის 16").
+  const text = `${pick(l.title, 'ka')} ${l.title.en ?? ''} ${l.description.original} ${l.description.en ?? ''}`
+  const found = placeHints(text)
+  const area = l.district ? districtLabel(l.district, 'en') : found.neighbourhood
+  // A street name can exist in several neighbourhoods (two Chavchavadze streets in Tbilisi): search it within the
+  // neighbourhood the seller names, and reject a match far from that neighbourhood.
+  const areaCentre = area ? await geocode([area, city, 'Georgia'].filter(Boolean).join(', ')) : null
+  for (const street of found.streets) tries.push([area ? `${street}, ${area}` : street, 'street'])
+  if (area) tries.push([area, 'district'])
   for (const [q, precision] of tries) {
     const p = await geocode([q, city, 'Georgia'].filter(Boolean).join(', '))
-    if (p) return { ...p, precision, label: [q, l.city ? cityLabel(l.city, 'ka') : ''].filter(Boolean).join(', ') }
+    if (!p) continue
+    if (precision === 'street' && areaCentre && distanceM(p.lat, p.lon, areaCentre.lat, areaCentre.lon) > NEIGHBOURHOOD_M) continue
+    return { ...p, precision, label: [q, l.city ? cityLabel(l.city, 'ka') : ''].filter(Boolean).join(', ') }
   }
   // A default pin still beats nothing: it is the district's (or the city's) own centre.
   if (l.latitude !== null && l.longitude !== null) return { lat: l.latitude, lon: l.longitude, precision: l.district ? 'district' : 'city', label }
@@ -147,6 +199,25 @@ async function mapFacts(at: Located, businessType: string | null, forSpace: bool
     data_note: 'From OpenStreetMap, the map shown on the listing page. Small shops and new places can be missing, so counts are a minimum; names and distances are reliable.',
   }
 }
+
+// Competition around a listing in a few numbers, for comparisons: nothing when only the city is known.
+export async function competitionBrief(l: CatalogListing): Promise<Record<string, unknown> | null> {
+  const at = await locateListing(l)
+  if (!at || at.precision === 'city') return { note: 'only the city is known; competition around the exact address cannot be judged' }
+  const facts = await mapFacts(at, PROPERTY_LIKE.has(l.category) ? null : l.category, isCommercialSpace(l), l.area)
+  if (!facts) return null
+  const c = facts.competition as { direct_competitors?: unknown; level_by_count?: string; nearest_direct?: { name: string; distance_m: number }[] } | null
+  return {
+    location: at.label,
+    precision: at.precision,
+    direct_competitors: c?.direct_competitors ?? null,
+    level: c?.level_by_count ?? null,
+    nearest: c?.nearest_direct?.slice(0, 4).map((n) => `${n.name} (${n.distance_m} m)`) ?? [],
+    footfall: facts.footfall_signal,
+  }
+}
+
+const PROPERTY_LIKE = new Set(['commercial_space', 'real_estate', 'offices', 'warehouse', 'land'])
 
 export async function analyzeArea(p: {
   at: Located

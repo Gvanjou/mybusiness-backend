@@ -164,3 +164,23 @@ test('a reply that ends with a real question is not treated as an unfinished act
   assert.equal(announcesAction('Давайте посмотрим варианты.'), true)
   assert.equal(announcesAction('აი სამი ვარიანტი თქვენთვის.'), false)
 })
+
+test('a form the model announced but got wrong does not end the turn: the model gets the error and asks again', async () => {
+  script = async function* (_params, n) {
+    if (n === 1) {
+      const text = 'შეგიძლია პირდაპირ ქვემოთ მოცემული ფორმა შეავსო:'
+      yield { type: 'text', text }
+      // Wrong field names and no options: nothing the UI can show.
+      const c = { name: 'show_form', args: { questions: [{ field: 'budget_in_lari', question: 'ბიუჯეტი?' }], submit_label: 'OK' } }
+      yield { type: 'done', model: 'stub', parts: [{ text }, { functionCall: c }], calls: [c] }
+      return
+    }
+    const c = { name: 'show_form', args: { questions: [{ field: 'budget', question: 'ბიუჯეტი?', options: [{ label: '50 000 ₾-მდე' }, { label: '50 000–150 000 ₾' }] }], submit_label: 'OK' } }
+    yield { type: 'done', model: 'stub', parts: [{ functionCall: c }], calls: [c] }
+  }
+  const r = await run('რა ინფორმაცია გჭირდება?')
+  assert.equal(calls, 2, 'the failed form is not accepted as the end of the turn')
+  const form = r.of('form')[0] as { questions: { field: string; options: { value: string }[] }[] }
+  assert.equal(form.questions[0]?.field, 'budget')
+  assert.equal(form.questions[0]?.options[0]?.value, '50 000 ₾-მდე', 'an option with only a label gets it as its value too')
+})

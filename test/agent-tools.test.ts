@@ -106,3 +106,22 @@ test('get_listing: a card already in the conversation is not shown again', async
     catalog.fetch = original
   }
 })
+
+test("show_form: the model's own field names are mapped to ours", async () => {
+  const c = ctx()
+  const r = (await runTool(
+    'show_form',
+    {
+      questions: [
+        { field: 'budget_gel', question: 'ბიუჯეტი?', options: [{ value: '30000', label: '30 000' }, { value: '70000', label: '70 000' }] },
+        { field: 'city', question: 'ქალაქი?', options: [{ value: 'Tbilisi', label: 'თბილისი' }, { value: 'any', label: 'ნებისმიერი' }] },
+        { field: 'business_type', question: 'სფერო?', options: [{ value: 'restaurants', label: 'კაფე' }, { value: 'any', label: 'ნებისმიერი' }] },
+        { field: 'favourite_colour', question: '?', options: [{ value: 'a', label: 'a' }, { value: 'b', label: 'b' }] },
+      ],
+      submit_label: 'OK',
+    },
+    c,
+  )) as { shown: number }
+  assert.equal(r.shown, 3)
+  assert.deepEqual(c.out.form?.questions.map((q) => q.field), ['budget', 'location', 'sector'])
+})

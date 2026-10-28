@@ -3,7 +3,7 @@ import { pick, type Locale } from '../../../shared/i18n/locale.js'
 import { categoryLabel, cityLabel, knownCategoryKeys, normalizeCity } from '../../catalog/catalog.labels.js'
 import type { CatalogListing } from '../../catalog/catalog.model.js'
 import { catalog, type CatalogSnapshot } from '../../catalog/catalog.service.js'
-import { analyzeArea, locateAddress, locateListing } from '../../competition/area.service.js'
+import { analyzeArea, competitionBrief, locateAddress, locateListing } from '../../competition/area.service.js'
 import { competitionSnapshot } from '../../competition/competition.service.js'
 import { knowledge } from '../../knowledge/knowledge.service.js'
 import { webSearch } from '../../web/web.service.js'
@@ -348,7 +348,19 @@ const executors: Record<string, Executor> = {
     ctx.out.cards = found.map((l) => toCard(l, ctx.locale, fits.get(l.id), ctx.s.rates.USD))
     ctx.out.compare = compareTable(found, ctx.s, fits, ctx.locale)
     ctx.state.lastShown = found.map((l) => l.id)
-    return { listings: found.map((l, i) => compactListing(l, ctx, i + 1, fits.get(l.id))), note: 'A comparison table is on screen; explain the differences that matter, do not repeat the table.' }
+    await ctx.progress('competition')
+    const briefs = await Promise.all(found.map((l) => competitionBrief(l)))
+    return {
+      listings: found.map((l, i) => ({
+        ...compactListing(l, ctx, i + 1, fits.get(l.id)),
+        rent_monthly: l.insights?.premises.rent_monthly ?? null,
+        premises: l.insights?.premises ?? null,
+        risks_in_text: l.insights?.risks ?? [],
+        competition_nearby: briefs[i],
+        seller_text: (l.description.original || l.description.en || '').slice(0, 1200),
+      })),
+      note: 'A comparison table is on screen with the raw numbers. Write the full breakdown: per option price, size and rent, advantages, disadvantages and risks, a score out of 10 with its reason; then the best fit for this client and what to verify.',
+    }
   },
 
   async market_stats(args, ctx) {
@@ -468,19 +480,29 @@ const executors: Record<string, Executor> = {
 
   async show_form(args, ctx) {
     const raw = args as { title?: string; questions?: { field?: string; question?: string; options?: { value?: string; label?: string }[] }[]; note_label?: string; submit_label?: string }
-    // One question per field, each with at least two real options; unknown fields are dropped.
+    // One question per field, each with at least two real options. The model sometimes names a field its own way
+    // ("budget_gel", "city", "business_type"): those are mapped; truly unknown fields are dropped. An option that
+    // has only a label uses it as the value too.
     const seen = new Set<string>()
     const questions: IntakeForm['questions'] = []
+    const dropped: string[] = []
     for (const q of raw.questions ?? []) {
-      const field = q.field as (typeof intakeFields)[number] | undefined
-      if (!field || !intakeFields.includes(field) || seen.has(field) || !q.question) continue
-      const options = (q.options ?? []).filter((o) => o.value && o.label).slice(0, 6).map((o) => ({ value: String(o.value).slice(0, 60), label: String(o.label).slice(0, 80) }))
+      const field = intakeField(q.field)
+      if (!field || !q.question) {
+        if (q.field) dropped.push(String(q.field))
+        continue
+      }
+      if (seen.has(field)) continue
+      const options = (q.options ?? [])
+        .filter((o) => o.label || o.value)
+        .slice(0, 6)
+        .map((o) => ({ value: String(o.value ?? o.label).slice(0, 60), label: String(o.label ?? o.value).slice(0, 80) }))
       if (options.length < 2) continue
       seen.add(field)
       questions.push({ field, question: String(q.question).slice(0, 200), options })
       if (questions.length === 7) break
     }
-    if (questions.length === 0) return { error: 'No valid questions; ask in plain text instead.' }
+    if (questions.length === 0) return { error: `No valid questions (unknown fields: ${dropped.join(', ') || 'none'}; allowed: ${intakeFields.join(', ')}). Call show_form again with these fields, or ask in plain text.` }
     ctx.out.form = {
       title: raw.title?.slice(0, 200),
       questions,
@@ -489,6 +511,22 @@ const executors: Record<string, Executor> = {
     }
     return { shown: questions.length, note: 'The form appears under your reply. If you have not written the short intro yet, write it now; do not repeat the questions.' }
   },
+}
+
+// A field name as the model wrote it → one of ours.
+function intakeField(raw: unknown): (typeof intakeFields)[number] | null {
+  const key = String(raw ?? '').toLowerCase().replace(/[^a-z]/g, '')
+  const aliases: Record<string, (typeof intakeFields)[number]> = {
+    budget: 'budget', budgetgel: 'budget', budgetrange: 'budget', capital: 'budget', investment: 'budget', amount: 'budget',
+    capitalsource: 'capital_source', source: 'capital_source', financing: 'capital_source', funding: 'capital_source',
+    involvement: 'involvement', time: 'involvement', timecommitment: 'involvement', hours: 'involvement', availability: 'involvement',
+    goal: 'goal', goals: 'goal', purpose: 'goal', objective: 'goal',
+    risk: 'risk', riskappetite: 'risk', risklevel: 'risk', risktolerance: 'risk',
+    location: 'location', city: 'location', cities: 'location', region: 'location', place: 'location',
+    sector: 'sector', sectors: 'sector', businesstype: 'sector', category: 'sector', industry: 'sector', type: 'sector',
+    experience: 'experience', experiencelevel: 'experience', background: 'experience',
+  }
+  return aliases[key] ?? null
 }
 
 export async function runTool(name: string, args: Record<string, unknown>, ctx: ToolContext): Promise<unknown> {

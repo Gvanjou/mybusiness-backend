@@ -186,9 +186,11 @@ export async function agentTurn(params: { session: Session; input: SendMessage; 
         responses.push({ functionResponse: { name, response: { result: value } } })
       }
       profile = ctx.profile
-      // Chips or a form complete the turn only when the reply already has text. A model often calls them first and
-      // writes after it sees the result: then it gets the result and writes in the next step.
-      if (reply.trim() && result.calls.every((c) => terminalTools.has(c.name ?? ''))) break
+      // Chips or a form complete the turn only when the reply already has text and the UI really got them. A model
+      // often calls them first and writes after it sees the result; and a failed show_form must not end the turn
+      // with "fill in the form below" and no form: the model sees the error and tries again or asks in text.
+      const delivered = Boolean(out.form) || out.quickReplies.length > 0
+      if (reply.trim() && delivered && result.calls.every((c) => terminalTools.has(c.name ?? ''))) break
       contents.push({ role: 'model', parts: result.parts }, { role: 'user', parts: responses })
     }
   } catch (err) {
@@ -253,11 +255,11 @@ export async function agentTurn(params: { session: Session; input: SendMessage; 
 }
 
 const DO_IT_NOW =
-  '(Instruction from the app, not from the client.) Your reply ended by saying you would look something up. Do it now: call the tool, then continue the answer with the results. Do not repeat what you already wrote.'
+  '(Instruction from the app, not from the client.) Your reply ended by announcing something you did not do (a search, a check, or a form to fill in). Do it now: call the tool (show_form for a form; search_listings, location_analysis, compare_listings… for the rest), then continue the answer with the result. Do not repeat what you already wrote.'
 
-// "Let's see / I'll check / let me find…" at the end of a reply, in Georgian, English or Russian.
+// "Let's see / I'll check / fill in the form below…" at the end of a reply, in Georgian, English or Russian.
 const ANNOUNCES =
-  /(მოდით|ახლა|მაშ)[,\s]+(ვნახოთ|გავარკვიოთ|მოვძებნოთ|შევამოწმოთ|გადავხედოთ|შევარჩიოთ)|(ვნახავ|მოვძებნი|შევამოწმებ|გადავხედავ|შეგირჩევთ)|\b(let me|let's|let us|i'll|i will|now i'll)\s+(look|check|search|find|see|pull|browse)|(давайте|сейчас)\s+(посмотрим|проверим|найд[её]м|подберём|подберем)|(посмотрю|проверю|найду|подберу)/i
+  /(მოდით|ახლა|მაშ)[,\s]+(ვნახოთ|გავარკვიოთ|მოვძებნოთ|შევამოწმოთ|გადავხედოთ|შევარჩიოთ)|(ვნახავ|მოვძებნი|შევამოწმებ|გადავხედავ|შეგირჩევთ)|ფორმა|კითხვ(ებ)?ს\s+დაგისვამ|\b(let me|let's|let us|i'll|i will|now i'll)\s+(look|check|search|find|see|pull|browse|ask)|\bform\b|(давайте|сейчас)\s+(посмотрим|проверим|найд[её]м|подберём|подберем)|(посмотрю|проверю|найду|подберу)|форм[ау]/i
 
 export function announcesAction(text: string): boolean {
   const tail = text.trim().slice(-220)
