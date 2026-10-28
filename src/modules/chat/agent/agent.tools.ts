@@ -1,6 +1,6 @@
 import { Type, type FunctionDeclaration } from '@google/genai'
 import { pick, type Locale } from '../../../shared/i18n/locale.js'
-import { categoryLabel, cityLabel, knownCategoryKeys, normalizeCity } from '../../catalog/catalog.labels.js'
+import { categoriesNamed, categoryLabel, cityLabel, knownCategoryKeys, normalizeCity } from '../../catalog/catalog.labels.js'
 import type { CatalogListing } from '../../catalog/catalog.model.js'
 import { catalog, type CatalogSnapshot } from '../../catalog/catalog.service.js'
 import { analyzeArea, competitionBrief, locateAddress, locateListing } from '../../competition/area.service.js'
@@ -502,11 +502,15 @@ const executors: Record<string, Executor> = {
     // One question per field, each with at least two real options. The model sometimes names a field its own way
     // ("budget_gel", "city", "business_type"): those are mapped; truly unknown fields are dropped. An option that
     // has only a label uses it as the value too.
+    // A business type named in the message ("რესტორანი მინდა") is known: kept in the profile and not asked again.
+    const named = has(ctx.profile, 'sectors') ? [] : categoriesNamed(ctx.userText ?? '')
+    if (named.length) ctx.profile = applyPatch(ctx.profile, { sectors: named }, ctx.turn).profile
     const seen = new Set<string>()
     const questions: IntakeForm['questions'] = []
     const dropped: string[] = []
     for (const q of raw.questions ?? []) {
       const field = intakeField(q.field)
+      if (field === 'sector' && has(ctx.profile, 'sectors')) continue
       if (!field || !q.question) {
         if (q.field) dropped.push(String(q.field))
         continue
@@ -521,10 +525,13 @@ const executors: Record<string, Executor> = {
       questions.push({ field, question: String(q.question).slice(0, 200), options })
       if (questions.length === 7) break
     }
-    // Every form offers the same budget ranges, and asks the kind of business when it is still unknown.
-    const budgetAt = questions.findIndex((q) => q.field === 'budget')
-    const budget = standardQuestion('budget', ctx.locale, ctx.s)
-    if (budgetAt >= 0 && budget) questions[budgetAt] = { ...budget, question: questions[budgetAt]!.question }
+    // Every form offers the same budget ranges and business types (most listed first, "any" last), and asks the kind
+    // of business when it is still unknown.
+    for (const field of ['budget', 'sector'] as const) {
+      const at = questions.findIndex((q) => q.field === field)
+      const standard = standardQuestion(field, ctx.locale, ctx.s)
+      if (at >= 0 && standard) questions[at] = { ...standard, question: questions[at]!.question }
+    }
     if (questions.length > 0 && !seen.has('sector') && !has(ctx.profile, 'sectors') && questions.length < 7) {
       const sector = standardQuestion('sector', ctx.locale, ctx.s)
       if (sector) questions.push(sector)

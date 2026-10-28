@@ -19,13 +19,16 @@ type Outcome = 'ok' | 'rate_limited' | 'error' | 'fallback'
 // prefer: try this model first (an agent's later steps must stay on the model that started the answer).
 // only: the client picked this model: use it and nothing else, so a busy or used-up model is reported, not hidden.
 // chain: this call's own model order (e.g. light models first for a quick question).
-type CallMeta = { sessionId?: string; maxWaitMs?: number; userSignal?: AbortSignal; prefer?: string; only?: string; chain?: readonly string[] }
+// attempts: requests this user turn may still send to Google, shared by all its steps. Every request that reaches
+// Google counts against the daily allowance, even one we stopped waiting for, so a turn never walks the whole chain.
+type CallMeta = { sessionId?: string; maxWaitMs?: number; userSignal?: AbortSignal; prefer?: string; only?: string; chain?: readonly string[]; attempts?: { left: number } }
 
 // Per-call limits: a model slower than this is skipped in favour of the next one in the chain.
 // For the responder it is the time to the FIRST streamed chunk.
-// Time for a model to start answering. With the system prompt, the conversation and tool results a Flash or Flash-Lite
-// model needs 3–10 s; one that has not started after 15 s is overloaded and the next one is faster.
-const callTimeoutMs: Record<AiTask, number> = { responder: 15_000, search: 25_000, transcribe: 25_000, embedding: 15_000 }
+// Time for a model to start answering. Usually 3–10 s, but when the free tier is busy every model is slow (20 s for
+// a two-word reply was measured): giving up early only sends the same slow request to the next model and spends its
+// allowance too. So the responder waits up to 30 s, and after a timeout at most one other model is tried.
+const callTimeoutMs: Record<AiTask, number> = { responder: 30_000, search: 25_000, transcribe: 25_000, embedding: 15_000 }
 const STREAM_TOTAL_TIMEOUT_MS = 90_000
 // Once a stream has started, only silence ends it: a model still sending text or a tool call is never cut.
 const STREAM_IDLE_TIMEOUT_MS = 15_000
@@ -94,9 +97,12 @@ async function withFallback<T>(task: AiTask, meta: CallMeta, call: (model: strin
   const overloadRetries = meta.sessionId ? 0 : 3
   const ordered = meta.only ? [meta.only] : quota.order(chain)
   const models = meta.prefer && ordered.includes(meta.prefer) ? [meta.prefer, ...ordered.filter((m) => m !== meta.prefer)] : ordered
+  let timedOut = false
   for (const model of models) {
+    if (meta.attempts && meta.attempts.left <= 0) break
     if (!(await quota.acquire(model, maxWaitMs, meta.sessionId ? 1 : JOB_QUOTA_SHARE))) continue
     for (let attempt = 0; ; attempt++) {
+      if (meta.attempts) meta.attempts.left--
       const started = Date.now()
       try {
         const result = await call(model)
@@ -116,7 +122,12 @@ async function withFallback<T>(task: AiTask, meta: CallMeta, call: (model: strin
         if (!isRetryable(err)) throw err
         // A 503 means Google is overloaded for a while; a slow start may be a one-off.
         if (isOverloaded(err)) quota.markUnhealthy(model, 5 * 60_000)
-        else if (isTimeout(err)) quota.markUnhealthy(model, 2 * 60_000)
+        else if (isTimeout(err)) {
+          quota.markUnhealthy(model, 2 * 60_000)
+          // A second timeout means Google is slow for every model: stop instead of spending more allowance.
+          if (timedOut) throw new AiUnavailableError(task)
+          timedOut = true
+        }
         // A timeout already cost a lot of time: go to the next model instead of waiting again.
         if (!isOverloaded(err) || attempt >= overloadRetries) break
         await sleep((meta.sessionId ? 600 : 2_000) * 2 ** attempt)

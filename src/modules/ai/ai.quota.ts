@@ -81,8 +81,10 @@ export const quota = {
     const s = get(model)
     const { rpd } = limitFor(model)
     const now = Date.now()
-    const used = s.exhausted ? rpd : Math.min(s.ok, rpd)
-    if (used >= rpd) return { status: 'limit', used, limit: rpd }
+    // used = answers it gave here today. Google may report its limit reached earlier (the limit is per project,
+    // shared with other keys and with requests that failed), so the state comes from Google's reply, the count from us.
+    const used = Math.min(s.ok, rpd)
+    if (s.exhausted || used >= rpd) return { status: 'limit', used, limit: rpd }
     return { status: s.unhealthyUntil > now || s.coolingUntil > now ? 'busy' : 'available', used, limit: rpd }
   },
 

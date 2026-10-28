@@ -111,6 +111,25 @@ test('a form with no words still gets an intro line, so the history has no empty
   assert.equal(r.of('form').length, 1)
 })
 
+test('a business type named in the message is not asked again in the form', async () => {
+  script = async function* () {
+    const c = {
+      name: 'show_form',
+      args: {
+        questions: [
+          { field: 'goal', question: 'მიზანი?', options: [{ value: 'growth', label: 'ზრდა' }, { value: 'own_job', label: 'საქმე' }] },
+          { field: 'sector', question: 'რა სფერო?', options: [{ value: 'land', label: 'მიწა' }, { value: 'restaurants', label: 'რესტორანი' }] },
+        ],
+        submit_label: 'OK',
+      },
+    }
+    yield { type: 'done', model: 'stub', parts: [{ text: 'რამდენიმე კითხვა.' }, { functionCall: c }], calls: [c] }
+  }
+  const r = await run('5000 ლარი მაქვს და რესტორანი მინდა ვიყიდო')
+  const form = r.of('form')[0] as { questions: { field: string }[] }
+  assert.deepEqual(form.questions.map((q) => q.field), ['goal'])
+})
+
 test('the last step offers only chips, so a model that keeps calling tools still produces an answer', async () => {
   script = async function* (params, n) {
     if (params.tools.every((t) => t.name === 'suggest_replies')) {

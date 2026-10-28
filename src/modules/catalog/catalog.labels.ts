@@ -90,6 +90,24 @@ export function categoryLabel(key: string, locale: Locale): string {
   return categories[key]?.[locale] ?? key.replace(/_/g, ' ')
 }
 
+// Business types named in a message ("რესტორანი მინდა", "хочу автомойку", "a car wash"), by the stem of each label in
+// every language, matched at the start of a word so endings ("რესტორანს", "автомойку") still match. Generic ones
+// ("other", "services") are left out: they say nothing about what the buyer wants.
+const stems: [string, string[]][] = Object.entries(categories)
+  .filter(([key]) => key !== 'other' && key !== 'services')
+  .map(([key, l]) => [
+    key,
+    [l.ka, l.en, l.ru]
+      .flatMap((x) => x.toLowerCase().split(/\s*\/\s*/))
+      .map((x) => x.replace(/[აეიოუaeiouyаеиоуыяю]+$/u, ''))
+      .filter((x) => x.length >= (/^[a-z]/.test(x) ? 4 : 3)), // "bar" would match "bargain"
+  ])
+
+export function categoriesNamed(text: string): string[] {
+  const t = text.toLowerCase()
+  return stems.filter(([, ss]) => ss.some((s) => new RegExp(`(?<!\\p{L})${s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`, 'u').test(t))).map(([key]) => key)
+}
+
 export function cityLabel(city: string | null, locale: Locale): string {
   if (!city) return ''
   return cities[city]?.[locale] ?? city

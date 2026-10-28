@@ -5,7 +5,7 @@ import { AppError } from '../../../shared/http/app-error.js'
 import { ai } from '../../ai/ai.gateway.js'
 import { chainFor, chatModels, MODEL_INFO, modelChains } from '../../ai/ai.models.js'
 import { quota } from '../../ai/ai.quota.js'
-import { categoryLabel } from '../../catalog/catalog.labels.js'
+import { categoriesNamed, categoryLabel } from '../../catalog/catalog.labels.js'
 import { catalog } from '../../catalog/catalog.service.js'
 import type { Emit, SendMessage } from '../chat.model.js'
 import { chatRepository, type Session } from '../chat.repository.js'
@@ -31,7 +31,9 @@ import { createTextFilter } from './agent.text.js'
 const MAX_STEPS = 3
 const HISTORY = 8
 // The whole turn, including tool calls. Past this the user has waited long enough.
-const TURN_BUDGET_MS = 40_000
+const TURN_BUDGET_MS = 55_000
+// Requests one message may send to Google across all its steps and fallbacks (see CallMeta.attempts).
+const MAX_ATTEMPTS = 4
 
 const showResultsText = { ka: 'მაჩვენე ვარიანტები', en: 'Show me options', ru: 'Покажи варианты' }
 
@@ -134,6 +136,7 @@ export async function agentTurn(params: { session: Session; input: SendMessage; 
   let continuing = false // the previous step was cut at the output limit: this one carries on the same sentence
   // Auto: Flash-Lite first for quick questions, the Flash models first for comparisons, risk, location and profit.
   const chain = only ? undefined : chainFor(userText)
+  const attempts = { left: MAX_ATTEMPTS }
 
   try {
     for (let step = 0; step < MAX_STEPS; step++) {
@@ -150,7 +153,7 @@ export async function agentTurn(params: { session: Session; input: SendMessage; 
       const filter = createTextFilter()
       let stepText = ''
       let result: { parts: Part[]; calls: { name?: string; args?: Record<string, unknown> }[]; cut?: boolean } | undefined
-      for await (const ev of ai.agentStep({ system, contents, tools, signal: stepSignal, sessionId: session.id, maxWaitMs: 2_000, prefer: model, only, chain, budgetMs: left })) {
+      for await (const ev of ai.agentStep({ system, contents, tools, signal: stepSignal, sessionId: session.id, maxWaitMs: 2_000, prefer: model, only, chain, attempts, budgetMs: left })) {
         if (ev.type === 'done') {
           result = ev
           model = ev.model
@@ -246,6 +249,8 @@ export async function agentTurn(params: { session: Session; input: SendMessage; 
     const early = !has(ctx.profile, 'budgetGel') || !(has(ctx.profile, 'goal') || has(ctx.profile, 'involvement'))
     const listingWork = calledTools.some((t) => ['search_listings', 'get_listing', 'analyze_listing', 'location_analysis', 'compare_listings', 'calculate', 'market_stats'].includes(t))
     if (!out.form && early && !listingWork && promisesForm(reply)) {
+      const named = has(ctx.profile, 'sectors') ? [] : categoriesNamed(userText)
+      if (named.length) ctx.profile = applyPatch(ctx.profile, { sectors: named }, ctx.turn).profile
       out.form = defaultIntakeForm(ctx.profile, locale, ctx.s)
       if (out.form) logger.info('form promised but not delivered; the app built it', { session: session.id })
     } else if (!out.form && !out.cards.length && !calledTools.includes('search_listings') && promisesListings(reply) && announcesAction(reply)) {

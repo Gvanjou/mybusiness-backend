@@ -64,3 +64,12 @@ test('rent in a business listing is what the business pays, not income; only pro
   const space = textInsights({ category: 'commercial_space', dealType: 'sale', texts: ['იყიდება ფართი, ქირით გაცემულია, ქირა თვეში 3000 ლარი.'], site, hasLocation: true, priceKnown: true })
   assert.equal(space.financials.rent_income_monthly?.min, 3000)
 })
+
+test('a business type named in a message is recognised in any language and with endings, generic words are not', async () => {
+  const { categoriesNamed } = await import('../src/modules/catalog/catalog.labels.js')
+  assert.deepEqual(categoriesNamed('გამარჯობა, 5000 ლარი მაქვს და რესტორანი მინდა ვიყიდო თბილისში'), ['restaurants'])
+  assert.deepEqual(categoriesNamed('Хочу купить автомойку в Тбилиси'), ['car_wash'])
+  assert.deepEqual(categoriesNamed('კაფე მინდა ბათუმში 30 ათასამდე'), ['bakery'])
+  assert.deepEqual(categoriesNamed('a good bargain, other services'), [])
+  assert.deepEqual(categoriesNamed('მინდა ბიზნესში ფულის ჩადება'), [])
+})
