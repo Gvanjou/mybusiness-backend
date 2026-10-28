@@ -17,7 +17,8 @@ export class AiUnavailableError extends Error {
 type Outcome = 'ok' | 'rate_limited' | 'error' | 'fallback'
 
 // prefer: try this model first (an agent's later steps must stay on the model that started the answer).
-type CallMeta = { sessionId?: string; maxWaitMs?: number; userSignal?: AbortSignal; prefer?: string }
+// only: the client picked this model: use it and nothing else, so a busy or used-up model is reported, not hidden.
+type CallMeta = { sessionId?: string; maxWaitMs?: number; userSignal?: AbortSignal; prefer?: string; only?: string }
 
 // Per-call limits: a model slower than this is skipped in favour of the next one in the chain.
 // For the responder it is the time to the FIRST streamed chunk.
@@ -86,7 +87,7 @@ async function withFallback<T>(task: AiTask, meta: CallMeta, call: (model: strin
   const maxWaitMs = meta.maxWaitMs ?? 3_000
   // Someone is waiting in the chat: a busy model is not retried, the next one is tried at once. Jobs can wait.
   const overloadRetries = meta.sessionId ? 0 : 3
-  const ordered = quota.order(chain)
+  const ordered = meta.only ? [meta.only] : quota.order(chain)
   const models = meta.prefer && ordered.includes(meta.prefer) ? [meta.prefer, ...ordered.filter((m) => m !== meta.prefer)] : ordered
   for (const model of models) {
     if (!(await quota.acquire(model, maxWaitMs, meta.sessionId ? 1 : JOB_QUOTA_SHARE))) continue

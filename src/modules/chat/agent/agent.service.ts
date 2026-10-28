@@ -3,7 +3,7 @@ import { formatGel, pick, type Locale } from '../../../shared/i18n/locale.js'
 import { logger, errorFields } from '../../../shared/logger/logger.js'
 import { AppError } from '../../../shared/http/app-error.js'
 import { ai } from '../../ai/ai.gateway.js'
-import { chatModels } from '../../ai/ai.models.js'
+import { chatModels, MODEL_INFO, modelChains } from '../../ai/ai.models.js'
 import { quota } from '../../ai/ai.quota.js'
 import { categoryLabel } from '../../catalog/catalog.labels.js'
 import { catalog } from '../../catalog/catalog.service.js'
@@ -114,6 +114,12 @@ export async function agentTurn(params: { session: Session; input: SendMessage; 
   }
   const toolResults: unknown[] = []
   const calledTools: string[] = []
+  // A model the client picked is used alone; one already used up for today is reported before trying.
+  const only = input.model && input.model !== 'auto' && modelChains.responder.includes(input.model) ? input.model : undefined
+  if (only && quota.status(only).status === 'limit') {
+    if (input.form) await chatRepository.saveSession({ ...session, locale, profile, state })
+    throw modelUnavailable(only)
+  }
   const justClicked = clickedKey(state.nextShown, userText)
   const endsAt = Date.now() + TURN_BUDGET_MS
   const stop = new AbortController()
@@ -136,7 +142,7 @@ export async function agentTurn(params: { session: Session; input: SendMessage; 
       const filter = createTextFilter()
       let stepText = ''
       let result: { parts: Part[]; calls: { name?: string; args?: Record<string, unknown> }[] } | undefined
-      for await (const ev of ai.agentStep({ system, contents, tools, signal: stepSignal, sessionId: session.id, maxWaitMs: 2_000, prefer: model, budgetMs: left })) {
+      for await (const ev of ai.agentStep({ system, contents, tools, signal: stepSignal, sessionId: session.id, maxWaitMs: 2_000, prefer: model, only, budgetMs: left })) {
         if (ev.type === 'done') {
           result = ev
           model = ev.model
@@ -207,7 +213,7 @@ export async function agentTurn(params: { session: Session; input: SendMessage; 
     } else if (!reply) {
       // Nothing written (no model, or the budget ran out). Form answers already gathered are kept.
       logger.warn('agent produced nothing', { session: session.id, ...errorFields(err) })
-      return unavailable(session, profile, state, locale)
+      return unavailable(session, profile, state, locale, only)
     } else {
       logger.warn('agent failed mid-reply', errorFields(err))
       const note = `${reply ? '\n\n' : ''}${pick(texts.cutOff, locale)}`
@@ -236,7 +242,7 @@ export async function agentTurn(params: { session: Session; input: SendMessage; 
     const line = out.form ? pick(texts.formIntro, locale) : out.cards.length ? pick(texts.resultsIntro, locale) : ''
     if (!line) {
       logger.warn('agent wrote nothing', { session: session.id })
-      return unavailable(session, profile, state, locale)
+      return unavailable(session, profile, state, locale, only)
     }
     reply = line
     await emit('token', { text: line })
@@ -264,12 +270,12 @@ export async function agentTurn(params: { session: Session; input: SendMessage; 
     role: 'assistant',
     content: reply,
     intent: 'chat',
-    payload: { cards: out.cards, compare: out.compare, sources: out.sources, quickReplies: out.quickReplies, form: out.form ?? undefined },
+    payload: { cards: out.cards, compare: out.compare, sources: out.sources, quickReplies: out.quickReplies, form: out.form ?? undefined, model: model ? (MODEL_INFO[model]?.name ?? model) : undefined },
   })
   state.lastIntent = 'chat'
   state.cardsShown = [...new Set([...state.cardsShown, ...out.cards.map((c) => c.id)])].slice(-60)
   await chatRepository.saveSession({ ...session, title: session.title ?? titleFrom(userText), locale, profile, state, turnCount: turn })
-  await emit('done', { messageId })
+  await emit('done', { messageId, model: model ? (MODEL_INFO[model]?.name ?? model) : undefined })
 }
 
 const DO_IT_NOW =
@@ -284,15 +290,24 @@ export function announcesAction(text: string): boolean {
   return tail.length > 0 && !tail.endsWith('?') && ANNOUNCES.test(tail)
 }
 
+function modelUnavailable(model: string): AppError {
+  const { status } = quota.status(model)
+  const reason = status === 'limit' ? 'limit' : 'busy'
+  const name = MODEL_INFO[model]?.name ?? model
+  return new AppError('model_unavailable', `${name} is ${reason === 'limit' ? 'used up for today' : 'busy right now'}. Pick another model.`, undefined, { model, reason, resetsAt: quota.usage([model]).resetsAt })
+}
+
 // The chat's name in the history: the first thing the user wrote, shortened.
 function titleFrom(text: string): string {
   const t = text.replace(/\s+/g, ' ').trim()
   return t.length > 60 ? `${t.slice(0, 57).trimEnd()}…` : t
 }
 
-// No answer this time: keep what the user told us and let the UI offer a retry.
-async function unavailable(session: Session, profile: Session['profile'], state: Session['state'], locale: Locale): Promise<never> {
+// No answer this time: keep what the user told us and let the UI offer a retry — or, when the client picked a model,
+// say which one and why, so the UI can offer to switch.
+async function unavailable(session: Session, profile: Session['profile'], state: Session['state'], locale: Locale, only?: string): Promise<never> {
   await chatRepository.saveSession({ ...session, locale, profile, state })
+  if (only) throw modelUnavailable(only)
   const { used, total } = quota.usage(chatModels())
   if (total && used >= total) throw new AppError('daily_limit', 'Today’s free AI allowance is used up. It renews when Google resets the daily limits.')
   throw new AppError('ai_unavailable', 'The AI could not answer right now. Please try again.', 30)

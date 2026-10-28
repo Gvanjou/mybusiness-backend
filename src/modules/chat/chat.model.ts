@@ -18,6 +18,7 @@ export const sendMessageSchema = z
     form: formAnswersSchema.optional(), // answers to the intake form the assistant showed
     context: z.object({ listingId: z.string().max(200).optional() }).optional(),
     locale: localeSchema.optional(),
+    model: z.string().max(60).optional(), // a model the client picked; absent or 'auto' = the best available
   })
   .refine((b) => Boolean(b.text || b.quickReply || b.action || b.form), 'text, quickReply, action or form is required')
 

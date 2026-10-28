@@ -9,6 +9,7 @@ export type ErrorCode =
   | 'session_expired'
   | 'ai_unavailable'
   | 'daily_limit'
+  | 'model_unavailable'
   | 'internal'
 
 const statusByCode: Record<ErrorCode, 400 | 401 | 403 | 404 | 413 | 429 | 500 | 503> = {
@@ -22,6 +23,7 @@ const statusByCode: Record<ErrorCode, 400 | 401 | 403 | 404 | 413 | 429 | 500 | 
   session_expired: 401,
   ai_unavailable: 503,
   daily_limit: 429,
+  model_unavailable: 503, // the model the client picked is busy or used up: the UI offers another
   internal: 500,
 }
 
@@ -33,6 +35,7 @@ export class AppError extends Error {
     readonly code: ErrorCode,
     message: string,
     readonly retryAfterSeconds?: number,
+    readonly details?: Record<string, unknown>, // safe extra fields for the UI (e.g. which model, why)
   ) {
     super(message)
     this.name = 'AppError'

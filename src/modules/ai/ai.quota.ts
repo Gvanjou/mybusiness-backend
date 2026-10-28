@@ -79,6 +79,16 @@ export const quota = {
     for (const row of ok ?? []) get(String(row.model)).ok++
   },
 
+  // For the model picker: used up today (limit), recently busy or slow (busy), or ready (available).
+  status(model: string): { status: 'available' | 'busy' | 'limit'; used: number; limit: number } {
+    const s = get(model)
+    const { rpd } = limitFor(model)
+    const now = Date.now()
+    const used = s.exhausted ? rpd : Math.min(s.ok, rpd)
+    if (used >= rpd) return { status: 'limit', used, limit: rpd }
+    return { status: s.unhealthyUntil > now || s.coolingUntil > now ? 'busy' : 'available', used, limit: rpd }
+  },
+
   recordOk(model: string): void {
     get(model).ok++
   },

@@ -8,7 +8,7 @@ import { RateLimiter } from '../../shared/http/rate-limit.js'
 import { pick } from '../../shared/i18n/locale.js'
 import { logger, errorFields } from '../../shared/logger/logger.js'
 import { AiUnavailableError } from '../ai/ai.gateway.js'
-import { chatModels } from '../ai/ai.models.js'
+import { chatModels, MODEL_INFO, modelChains } from '../ai/ai.models.js'
 import { quota } from '../ai/ai.quota.js'
 import { requireUser, type User } from '../auth/auth.service.js'
 import { clearOpenConversation, openConversationId, setOpenConversation } from './chat.cookie.js'
@@ -69,6 +69,15 @@ async function json<T>(c: Context, parse: (v: unknown) => T): Promise<T> {
 // /api/assistant: the chat. Sign-in is required; conversations belong to the user and stay in the history.
 export const chatRoutes = new Hono()
   .use(sameOrigin)
+  // The models the chat can use, with today's state, for the model picker.
+  .get('/models', async (c) => {
+    await requireUser(c)
+    return c.json({
+      models: modelChains.responder.map((id) => ({ id, name: MODEL_INFO[id]?.name ?? id, tier: MODEL_INFO[id]?.tier ?? 'flash', ...quota.status(id) })),
+      resetsAt: quota.usage(chatModels()).resetsAt,
+    })
+  })
+
   .get('/usage', async (c) => {
     await requireUser(c)
     return c.json(usage())
@@ -183,7 +192,7 @@ export const chatRoutes = new Hono()
         } catch (err) {
           const safe = err instanceof AppError ? err : new AppError('internal', 'Something went wrong. Please try again.')
           if (!(err instanceof AppError)) logger.error('chat turn failed', { session: session.id, ...errorFields(err) })
-          await stream.writeSSE({ event: 'error', data: JSON.stringify({ code: safe.code, message: safe.message }) })
+          await stream.writeSSE({ event: 'error', data: JSON.stringify({ code: safe.code, message: safe.message, ...safe.details }) })
         } finally {
           inFlight.delete(session.id)
         }

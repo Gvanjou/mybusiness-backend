@@ -32,11 +32,11 @@ after(() => {
   ai.agentStep = original
 })
 
-async function run(text: string) {
+async function run(text: string, model?: string) {
   const session: Session = { id: '00000000-0000-4000-8000-000000000001', userId: 'test-user', title: null, locale: 'ka', profile: {}, state: sessionStateSchema.parse({}), turnCount: 0, expiresAt: new Date() }
   const events: { event: string; data: unknown }[] = []
   calls = 0
-  await agentTurn({ session, input: { text }, emit: async (event, data) => void events.push({ event, data }), signal: new AbortController().signal })
+  await agentTurn({ session, input: { text, model }, emit: async (event, data) => void events.push({ event, data }), signal: new AbortController().signal })
   const tokens = events.filter((e) => e.event === 'token').map((e) => (e.data as { text: string }).text).join('')
   return { events, tokens, of: (name: string) => events.filter((e) => e.event === name).map((e) => e.data) }
 }
@@ -207,4 +207,33 @@ test('"let\'s see the options" with no search → the app searches and shows lis
   }
   const r = await run('მაჩვენე')
   assert.ok(r.of('listings').length === 1, 'listing cards are on screen')
+})
+
+test('a picked model is the only one tried, and the answer says which model wrote it', async () => {
+  const seen: Step[] = []
+  script = async function* (params) {
+    seen.push(params)
+    yield { type: 'text', text: 'პასუხი.' }
+    yield { type: 'done', model: 'gemini-3.5-flash-lite', parts: [{ text: 'პასუხი.' }], calls: [] }
+  }
+  const r = await run('რა არის due diligence?', 'gemini-3.5-flash-lite')
+  assert.equal(seen[0]!.only, 'gemini-3.5-flash-lite')
+  assert.equal((r.of('done')[0] as { model?: string }).model, 'Gemini 3.5 Flash-Lite')
+})
+
+test('a picked model that is busy is reported with its reason instead of quietly switching', async () => {
+  script = null // the model does not answer
+  await assert.rejects(run('რა არის due diligence?', 'gemini-3.8-flash'), (err: AppError) => err.code === 'model_unavailable' && err.details?.model === 'gemini-3.8-flash' && err.details?.reason === 'busy')
+})
+
+test('a picked model already used up today is refused at once, without calling it', async () => {
+  const { quota } = await import('../src/modules/ai/ai.quota.js')
+  quota.markExhausted('gemini-3.7-flash')
+  let called = false
+  script = async function* () {
+    called = true
+    yield { type: 'done', model: 'x', parts: [], calls: [] }
+  }
+  await assert.rejects(run('გამარჯობა', 'gemini-3.7-flash'), (err: AppError) => err.code === 'model_unavailable' && err.details?.reason === 'limit')
+  assert.equal(called, false)
 })

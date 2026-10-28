@@ -18,7 +18,7 @@ export const app = new Hono()
   .onError((err, c) => {
     if (err instanceof AppError) {
       if (err.retryAfterSeconds) c.header('retry-after', String(err.retryAfterSeconds))
-      return c.json({ code: err.code, message: err.message }, err.status)
+      return c.json({ code: err.code, message: err.message, ...err.details }, err.status)
     }
     logger.error('unhandled error', { path: c.req.path, ...errorFields(err) })
     return c.json({ code: 'internal', message: 'Something went wrong' }, 500)

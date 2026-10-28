@@ -21,6 +21,18 @@ export const FREE_CHAT_MODELS = [
   'gemini-3.1-flash-lite-preview',
 ] as const
 
+// How the model picker shows them. flash = smarter, 20 a day; lite = quicker and lighter, 500 a day.
+export const MODEL_INFO: Record<string, { name: string; tier: 'flash' | 'lite' }> = {
+  'gemini-3.8-flash': { name: 'Gemini 3.8 Flash', tier: 'flash' },
+  'gemini-3.7-flash': { name: 'Gemini 3.7 Flash', tier: 'flash' },
+  'gemini-3.6-flash': { name: 'Gemini 3.6 Flash', tier: 'flash' },
+  'gemini-3.5-flash': { name: 'Gemini 3.5 Flash', tier: 'flash' },
+  'gemini-3-flash-preview': { name: 'Gemini 3 Flash', tier: 'flash' },
+  'gemini-3.5-flash-lite': { name: 'Gemini 3.5 Flash-Lite', tier: 'lite' },
+  'gemini-3.1-flash-lite': { name: 'Gemini 3.1 Flash-Lite', tier: 'lite' },
+  'gemini-3.1-flash-lite-preview': { name: 'Gemini 3.1 Flash-Lite (preview)', tier: 'lite' },
+}
+
 export const modelChains: Record<AiTask, readonly string[]> = {
   responder: env.GEMINI_RESPONDER_MODELS.length ? env.GEMINI_RESPONDER_MODELS : FREE_CHAT_MODELS,
   // Google Search / Maps grounding: the same pool, fastest first (the answer is only facts for the responder).
