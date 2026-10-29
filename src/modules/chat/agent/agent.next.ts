@@ -54,8 +54,8 @@ export function topicsOf(text: string): string[] {
   return TOPICS.filter(([, re]) => re.test(text)).map(([k]) => k)
 }
 
-const TOPIC_OF_KEY: Partial<Record<NextKey, string>> = { compare: 'compare', best: 'best', risks_each: 'risks', locations: 'location', location: 'location', risks: 'risks', price: 'price', calc: 'profit', seller: 'seller', similar: 'similar', visit: 'visit' }
-const TOPIC_OF_TOOL: Record<string, string> = { compare_listings: 'compare', location_analysis: 'location', profit_scenarios: 'profit', calculate: 'profit', seller_message: 'seller', visit_checklist: 'visit' }
+const TOPIC_OF_KEY: Partial<Record<NextKey, string>> = { listings_sector: 'search', compare: 'compare', best: 'best', risks_each: 'risks', locations: 'location', location: 'location', risks: 'risks', price: 'price', calc: 'profit', seller: 'seller', similar: 'similar', visit: 'visit' }
+const TOPIC_OF_TOOL: Record<string, string> = { search_listings: 'search', compare_listings: 'compare', location_analysis: 'location', profit_scenarios: 'profit', calculate: 'profit', seller_message: 'seller', visit_checklist: 'visit' }
 const ABOUT_ONE: NextKey[] = ['price', 'calc', 'seller', 'location', 'risks', 'visit', 'similar']
 
 export type Offered = { key: string; text: string }

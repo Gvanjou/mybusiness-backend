@@ -19,7 +19,7 @@ import { entryQuickReplies, profileItems, texts } from '../templates/templates.j
 import { collectNumbers, validateReply } from '../validator/validator.service.js'
 import { agentSystem } from './agent.prompt.js'
 import { cardFor, factSheet, refOf, shortName } from './agent.facts.js'
-import { applyFormAnswers, budgetPatch, emptyOutput, fallbackHandoff, profileFacts, runTool, statedMoney, terminalTools, toolDeclarations, toolsFor, type ToolContext, type ToolOutput } from './agent.tools.js'
+import { applyFormAnswers, budgetPatch, RELAX, emptyOutput, fallbackHandoff, profileFacts, runTool, statedMoney, terminalTools, toolDeclarations, toolsFor, type RelaxKind, type ToolContext, type ToolOutput } from './agent.tools.js'
 import { formWanted, missingKeyFacts, promisesForm, promisesListings, standardForm } from './agent.fallback.js'
 import { answerChips, clickedKey, mergeChips, nextSteps, offeredFrom, topicsOf } from './agent.next.js'
 import { createRepeatCheck, createTextFilter, fixScript, profileArgsIn, withoutTables, type HiddenBlock } from './agent.text.js'
@@ -162,6 +162,16 @@ export async function agentTurn(params: Params): Promise<void> {
       .filter((m) => m.role === 'assistant')
       .slice(-2)
       .flatMap((m) => refsIn(m.content, state)),
+  }
+  // A widen button the client tapped ("სხვა ქალაქებშიც მოძებნე"): this turn's search widens exactly that way, so it finds
+  // what the button's count promised. Widening the city also takes it out of the memory.
+  const widen = (Object.keys(RELAX) as RelaxKind[]).find((k) => Object.values(RELAX[k]).includes(userText.trim()))
+  if (widen) {
+    ctx.widen = widen
+    if (widen === 'any_city' && has(ctx.profile, 'cities')) {
+      const { cities: _, ...rest } = ctx.profile
+      ctx.profile = applyPatch(rest, { locationFlexible: true }, turn).profile
+    }
   }
   const toolResults: unknown[] = []
   const calledTools: string[] = []

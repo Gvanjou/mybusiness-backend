@@ -56,6 +56,7 @@ export type ToolContext = {
   out: ToolOutput
   progress: (step: string, count?: number) => Promise<void>
   userText?: string // the client's message this turn, for tools that must honour what it names
+  widen?: RelaxKind // the client tapped a widen button: the search widens that way, whatever the model passes
   earlier?: EarlierChat[] // the client's other conversations, newest first (read only by recall_previous_chats)
   discussed?: string[] // listings the last two answers named ("#4"), for the fact sheets in CONTEXT
 }
@@ -149,7 +150,7 @@ export const toolDeclarations: FunctionDeclaration[] = [
         cost_of_goods_pct: num('% of revenue (café ≈ 30–35)'),
         rent_monthly_gel: num("Default: the listing's rent"),
         staff_monthly_gel: num('All wages a month'),
-        owner_salary_monthly_gel: num('If the buyer works in it'),
+        owner_salary_monthly_gel: num('If the buyer works in it: 2000 unless the client says otherwise'),
         utilities_monthly_gel: num('Power, gas, water, internet a month'),
         other_monthly_gel: num('Accounting, marketing, delivery fees… a month'),
         tax_pct_of_revenue: num('Default 1 (small business status)'),
@@ -166,7 +167,7 @@ export const toolDeclarations: FunctionDeclaration[] = [
         profit_monthly_gel: num('Net profit a month'),
         rent_monthly_gel: num('Rent income a month (property)'),
         extra_gel: num('Renovation, stock, working capital'),
-        owner_salary_monthly_gel: num('If the buyer works in it'),
+        owner_salary_monthly_gel: num('If the buyer works in it: 2000 unless the client says otherwise'),
       },
       required: ['price_gel'],
     },
@@ -371,7 +372,9 @@ const executors: Record<string, Executor> = {
     // With a budget, a listing without a price can't be judged against it ("price on request" cards were noise).
     const unpriced = val(p, 'budgetGel') ? ctx.s.listings.filter((l) => l.priceGel === null).map((l) => l.id) : []
     const exclude = new Set([...(args.exclude_shown ? ctx.state.refs : []), ...unpriced])
-    const options = { track, exclude, strictSectors: categories.length > 0 }
+    // A widen button applies exactly the widening its count was made with.
+    const w = ctx.widen
+    const options = { track, exclude, strictSectors: categories.length > 0 && w !== 'any_sector', ignoreCities: w === 'any_city', budgetSlack: w === 'budget_up' ? 1.4 : undefined, allowProperty: w === 'include_property' }
     // The best candidates are read in full (description, figures, address) and ranked again with what they say.
     const first = search(ctx.s, p, options)
     ctx.s = await catalog.withDetails(ctx.s, first.ranked.slice(0, 8).map((r) => r.listing.id))
@@ -757,7 +760,8 @@ const executors: Record<string, Executor> = {
 const MAX_COMPARE = 4
 
 // One-tap ways to widen a search that found nothing, in the client's words.
-const RELAX: Record<'budget_up' | 'any_city' | 'include_property' | 'any_sector', Localized> = {
+export type RelaxKind = 'budget_up' | 'any_city' | 'include_property' | 'any_sector'
+export const RELAX: Record<RelaxKind, Localized> = {
   budget_up: { ka: 'ბიუჯეტი ოდნავ გავზარდოთ', en: 'Raise the budget a little', ru: 'Немного поднять бюджет' },
   any_city: { ka: 'სხვა ქალაქებშიც მოძებნე', en: 'Search other cities too', ru: 'Искать и в других городах' },
   include_property: { ka: 'კომერციული ფართებიც მაჩვენე', en: 'Show commercial spaces too', ru: 'Показать и коммерческие помещения' },

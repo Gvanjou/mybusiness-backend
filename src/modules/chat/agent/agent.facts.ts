@@ -34,7 +34,7 @@ export function idOfRef(state: SessionState, n: number): string | undefined {
 // Words that say nothing about what the business is: sale words, "business", "operating", "urgent".
 const FILLER: Record<Locale, RegExp> = {
   ka: /^(იყიდება|იყიდებ\S*|სასწრაფოდ|მოქმედი|მომქმედი|ფუნქციონირებადი|მზა|ბიზნესი|ბიზნესის|გასაყიდი|ახალი|კარგი|ძალიან|და|ან|ქირავდება|შენობა|კონფიდენციალური|პრემიუმ)$/,
-  en: /^(for|sale|selling|sell|urgent|urgently|operating|running|ready|turnkey|business|the|a|an|in|of|and|new|confidential|premium)$/i,
+  en: /^(for|sale|selling|sell|urgent|urgently|operating|active|running|working|ready|turnkey|business|the|a|an|in|of|and|new|confidential|premium)$/i,
   ru: /^(продается|продаётся|продам|продажа|срочно|действующий|действующая|действующее|готовый|готовая|бизнес|бизнеса|в|на|и|новый|конфиденциально)$/i,
 }
 const SCRIPT: Record<Locale, RegExp> = { ka: /[ა-ჰ]/, en: /[a-z]/i, ru: /[а-яё]/i }
@@ -192,6 +192,7 @@ const W = {
   competitors: t('{n} პირდაპირი კონკურენტი {r} მ-ში ({n150} — 150 მ-ში){nearest}', '{n} direct competitors within {r} m ({n150} within 150 m){nearest}', '{n} прямых конкурентов в радиусе {r} м ({n150} — в 150 м){nearest}'),
   nearest: t('; უახლოესი: {list}', '; nearest: {list}', '; ближайшие: {list}'),
   staffForArea: t('{n} თანამშრომელი {a} მ²-ზე — დაუჯერებლად ბევრია, გადაამოწმეთ', '{n} staff for {a} m² — implausibly many, verify', '{n} сотрудников на {a} м² — неправдоподобно много, проверьте'),
+  priceVsTurnover: t('ფასი ≈ {m} თვის ნათქვამი ბრუნვაა — ან ძალიან იაფია, ან ბრუნვა გაზვიადებულია, გადაამოწმეთ', 'the price is about {m} months of the stated turnover — either a bargain or an inflated turnover, verify', 'цена ≈ {m} мес. заявленной выручки — либо очень дёшево, либо выручка завышена, проверьте'),
   rentVsPrice: t('ქირა {r} ₾/თვე — წლის ქირა ფასზე მეტია, ძალიან მაღალი ხარჯია', 'rent {r} ₾/month — a year of rent is more than the price, a very high cost', 'аренда {r} ₾/мес. — за год больше цены, очень высокая нагрузка'),
   fastPayback: t('ნათქვამი მოგებით ფასი {m} თვეში ანაზღაურდება — უჩვეულოდ სწრაფია, გადაამოწმეთ', 'at the stated profit the price pays back in {m} months — unusually fast, verify', 'при заявленной прибыли цена окупается за {m} мес. — подозрительно быстро, проверьте'),
 }
@@ -212,6 +213,9 @@ function doubtsOf(l: CatalogListing, s: CatalogSnapshot, locale: Locale, area: n
     const months = l.priceGel / profit[1]
     if (months < 6) out.push(say(W.fastPayback, locale, { m: decimal(Math.max(0.1, Math.floor(months * 10) / 10), locale) }))
   }
+  // A price of a month or two of the claimed turnover: a bargain, or (more often) a claim that does not hold.
+  const turnover = i?.financials.revenue_monthly ? monthlyGel(i.financials.revenue_monthly, s.rates) : null
+  if (turnover && turnover[0] > 0 && l.priceGel && l.priceGel <= turnover[0] * 2) out.push(say(W.priceVsTurnover, locale, { m: decimal(Math.max(0.1, Math.round((l.priceGel / turnover[0]) * 10) / 10), locale) }))
   // A year's rent above the price: the premises alone cost more than the business, so it must turn over a lot.
   const rent = i?.premises.rent_monthly && !PROPERTY_KINDS.includes(l.category) ? monthlyGel(i.premises.rent_monthly, s.rates) : null
   if (rent && rent[0] > 0 && l.priceGel && rent[0] * 12 >= l.priceGel) out.push(say(W.rentVsPrice, locale, { r: num(approx(rent[0]), locale) }))

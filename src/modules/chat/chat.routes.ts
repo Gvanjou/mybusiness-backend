@@ -97,14 +97,11 @@ export const chatRoutes = new Hono()
     return c.json(usage())
   })
 
-  // Chat history: every chat except the one in progress. The open chat is in progress when it is the user's newest;
-  // it joins the history once they start a new chat. A chat reopened from the history stays listed (and deleting
-  // it starts a new chat, see the client).
+  // Chat history: every chat with a message from the user, the open one included (the client marks it; deleting it
+  // starts a new chat).
   .get('/conversations', async (c) => {
     const user = await requireUser(c)
-    const [items, newest] = await Promise.all([chatRepository.listForUser(user.id), chatRepository.newestForUser(user.id)])
-    const open = openConversationId(c)
-    return c.json({ items: items.filter((i) => !(i.id === open && i.id === newest)) })
+    return c.json({ items: await chatRepository.listForUser(user.id) })
   })
 
   // Deletes one chat from the history (on the user's request only).
