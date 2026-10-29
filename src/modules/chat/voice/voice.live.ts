@@ -51,7 +51,7 @@ export const isSlowTool = (name: string) => SLOW.has(name)
 const pending = new Map<string, ToolOutput>()
 // The whole call, per chat: when it began, every listing it found, what was said: for the summary card that closes
 // it in the chat.
-const calls = new Map<string, { startedAt: number; locale: Locale; cards: ListingCard[]; turns: number; lines: string[] }>()
+const calls = new Map<string, { startedAt: number; locale: Locale; userId: string; granted: number; cards: ListingCard[]; turns: number; lines: string[] }>()
 // Recognition and the voice are locked to the call's language (final test: a silent room was transcribed as Uzbek
 // and answered in Russian).
 const BCP47: Record<Locale, string> = { ka: 'ka-GE', en: 'en-US', ru: 'ru-RU' }
@@ -130,7 +130,7 @@ export async function startCall(session: Session, userId: string, locale: Locale
   })
   if (!token.name) throw new AppError('ai_unavailable', 'Voice is not available right now.', 30)
   pending.delete(session.id)
-  calls.set(session.id, { startedAt: started, locale, cards: [], turns: 0, lines: [] })
+  calls.set(session.id, { startedAt: started, locale, userId, granted: maxSeconds, cards: [], turns: 0, lines: [] })
   logCall(session.id, Date.now() - started)
   return { token: token.name, model: env.GEMINI_LIVE_MODEL, expiresAt, maxSeconds, listings }
 }
@@ -204,6 +204,10 @@ export async function saveTurn(session: Session, spoken: string, assistantText: 
   if (ended && call) {
     calls.delete(session.id)
     const seconds = Math.round((Date.now() - call.startedAt) / 1000)
+    // The allowance booked the whole call up front; what a short call did not use goes back (a few 20-second tries
+    // once used up a day's minutes).
+    const used = minutes.get(call.userId)
+    if (used) used.seconds = Math.max(0, used.seconds - Math.max(0, call.granted - Math.min(call.granted, seconds)))
     if ((call.turns || call.cards.length) && (seconds >= SUMMARY_FROM_SECONDS || call.cards.length)) {
       const facts = profileItems(profile, locale).map((i) => i.value)
       const [summary, chips] = await Promise.all([summarizeCall(session.id, call.lines, locale), nextStepsAfterCall(updated)])

@@ -129,6 +129,7 @@ export const chatRoutes = new Hono()
       locale: session.locale,
       profile: profileItems(session.profile, session.locale),
       messages: messages.map((m) => ({ id: m.id, role: m.role, content: m.content, payload: m.payload, createdAt: m.createdAt })),
+      voice: env.VOICE_ENABLED, // with the chat itself, so the voice button is there on a fresh chat too
     })
   })
 

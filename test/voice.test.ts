@@ -79,10 +79,16 @@ test("the call follows the language the client sees, not the chat's stored one: 
   assert.match(payload.callSummary.facts[0]!, /^≤ 30\s000 ₾$/, 'facts in the call language (no Georgian label on the budget)')
 })
 
-test('each user has a daily allowance of voice minutes', async () => {
-  await startCall(session(), 'user-b') // 10 of 20 minutes
-  await startCall(session(), 'user-b') // 20 of 20
+test('each user has a daily allowance of voice minutes; a short call gives back what it did not use', async () => {
+  for (let i = 0; i < 6; i++) await startCall(session(), 'user-b') // 6 × 10 of 60 minutes, none ended
   await assert.rejects(startCall(session(), 'user-b'), (err: { code?: string }) => err.code === 'daily_limit')
+  // Ended at once, each call books only its seconds: a day of short tries is not a day's minutes.
+  for (let i = 0; i < 12; i++) {
+    const s = session()
+    await startCall(s, 'user-short')
+    await saveTurn(s, 'გამარჯობა', 'გამარჯობა.', true)
+  }
+  await startCall(session(), 'user-short')
 })
 
 test("a tool call runs on the chat's own state; only the call's tools run; what they show is saved with the turn", async () => {

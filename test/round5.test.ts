@@ -51,9 +51,11 @@ test('a budget stated in a message is read, in GEL', () => {
 
 test('fact sheets: area read from the text, Georgian names only, over-budget said with the amount, no unfair price comparison', () => {
   const state = sessionStateSchema.parse({})
-  const sheet = factSheet(cafe, snapshot, state, 'ka', 50000)
-  assert.match(sheet.area, /^21 მ² \*\(გამყიდველის თქმით\)\*$/)
-  assert.match(sheet.rent, /\(\$450\) \*\(გამყიდველის თქმით\)\*$/)
+  const sheet = factSheet(cafe, snapshot, state, 'ka', 50000) as Record<string, string | undefined>
+  assert.match(sheet.area, /^21 მ²$/, 'a plain value: no source in brackets')
+  assert.match(sheet.rent, /\(\$450\)$/)
+  assert.match(sheet.seller_says!, /area/, "what the seller's text claims is named once")
+  assert.match(sheet.seller_says!, /rent/)
   assert.match(sheet.budget!, /2\s000 ₾-ით აღემატება თქვენს ბიუჯეტს \(50\s000 ₾\)/)
   assert.match(sheet.price_vs_similar, /ვერ შედარდება/, 'no listings of its size: no comparison with restaurants in general')
   assert.doesNotMatch(sheet.name, /Gorgiladze/, 'a Latin street never lands in a Georgian name')

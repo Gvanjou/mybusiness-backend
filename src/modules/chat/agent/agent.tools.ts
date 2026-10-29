@@ -20,7 +20,7 @@ import { listingUrl, type ListingCard } from '../tools/cards.js'
 import { marketFacts, scoreListings } from '../tools/facts.tool.js'
 import { relaxations, search } from '../tools/search.tool.js'
 import type { QuickReply } from '../planner/planner.service.js'
-import { cardFor, compareTable, factSheet, idOfRef, refOf, rememberPlace, shortName, type CompareTable } from './agent.facts.js'
+import { cardFor, compareTable, decimal, factSheet, idOfRef, refOf, rememberPlace, shortName, type CompareTable } from './agent.facts.js'
 import { bucketFloor, formWanted, missingKeyFacts } from './agent.fallback.js'
 import type { IntakeForm } from './agent.model.js'
 
@@ -224,7 +224,7 @@ export const toolDeclarations: FunctionDeclaration[] = [
       type: Type.OBJECT,
       properties: {
         ref: refParam,
-        message: str('In the reply language, formal and polite throughout (Georgian: "დაინტერესებული ვარ", "თქვენ"): greeting, which listing (by its type and street or district, never "#n": the seller does not know the chat\'s numbers), the open questions (real turnover, rent and lease, reason for sale, staff, debts, anything on its sheet\'s check line), documents or a visit. Under 120 words, no placeholders.'),
+        message: str('In the reply language, formal and polite throughout (Georgian: "დაინტერესებული ვარ", "თქვენ"): greeting, which listing (by its type and street or district, never "#n": the seller does not know the chat\'s numbers), the open questions — only what the listing does not state (its sheet\'s not_stated and check lines: turnover, rent and lease, staff, debts…), never the reason for sale when the sheet has it — documents or a visit. Under 120 words, no placeholders.'),
       },
       required: ['ref', 'message'],
     },
@@ -760,7 +760,7 @@ const executors: Record<string, Executor> = {
     ctx.out.checklist = { listingId: l.id, n: refOf(ctx.state, l.id), name: shortName(l, ctx.locale), items }
     focus(ctx, l)
     markTopic(ctx.state, l.id, 'visit')
-    return { shown: true, note: 'The tickable checklist is on screen and stays with the listing. Do not repeat the items; add only what matters most.' }
+    return { shown: true, note: 'The tickable checklist is on screen and stays with the listing. Nothing is scheduled: say the checklist is ready, never that a visit is planned. Do not repeat the items; add only what matters most.' }
   },
 
   async create_alert(args, ctx) {
@@ -858,7 +858,7 @@ function profitTable(
       { key: 'tax', label: t(`გადასახადი (${taxPct}%)`, `Tax (${taxPct}%)`, `Налог (${taxPct}%)`), values: scenarios.map((s) => `−${gel(s.tax_gel)}`) },
       { key: 'profit', label: t('წმინდა მოგება', 'Net profit', 'Чистая прибыль'), values: scenarios.map((s) => gel(s.net_profit_monthly_gel)) },
       // Under 6 months is unusually fast for a business: said in the table itself, so no answer can skip it.
-      { key: 'payback', label: t(`ანაზღაურება (${gel(total)})`, `Payback (${gel(total)})`, `Окупаемость (${gel(total)})`), values: scenarios.map((s) => (s.payback_months === null ? '—' : `${s.payback_months} ${months}${s.payback_fast ? ` — ${fast}` : ''}`)) },
+      { key: 'payback', label: t(`ანაზღაურება (${gel(total)})`, `Payback (${gel(total)})`, `Окупаемость (${gel(total)})`), values: scenarios.map((s) => (s.payback_months === null ? '—' : `${decimal(s.payback_months, locale)} ${months}${s.payback_fast ? ` — ${fast}` : ''}`)) },
     ],
   }
 }

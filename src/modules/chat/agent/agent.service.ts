@@ -123,7 +123,13 @@ export async function agentTurn(params: Params): Promise<void> {
   // A change the client made in the memory strip is spelled out with this message, so it outweighs older answers.
   // So is the question the last answers ended with: the model must not ask it again.
   const notes = [editNote(state.profileEdited, profile, locale), askedNote(state.askedRecently)].filter(Boolean)
-  const contents: Content[] = [...toContents(history), { role: 'user', parts: [{ text: [userText, ...notes].join('\n\n') }] }]
+  // The model reads a pasted link as the listing's number and name ("#5 საკონდიტრო, ვაკე"): a bare URL once got an
+  // answer about the previous listing. The saved message keeps the link.
+  const modelText = pastedId ? userText.replace(/https?:\/\/\S*mybusiness\.ge\/\S+/i, `#${refOf(state, pastedId)} ${shortName(s.byId.get(pastedId)!, locale)}`) : userText
+  // A message that changes the subject (a kind of business or a budget, no listing named) leaves the old focus
+  // behind, so the next-step chips follow the new topic, not "#1 car wash".
+  if (!pastedId && !refsIn(userText, state).length && (categoriesNamed(userText).length || statedMoney(userText, s.rates))) state.contextListingId = undefined
+  const contents: Content[] = [...toContents(history), { role: 'user', parts: [{ text: [modelText, ...notes].join('\n\n') }] }]
 
   await emit('status', { step: 'understanding' })
   // The listings this chat is about, read in full, so their fact sheets have the rent, turnover and address.
@@ -469,7 +475,8 @@ function editNote(keys: string[], profile: Session['profile'], locale: Locale): 
     // Strip values that carry their own label ("გამოცდილება: ცოტა") are not labelled twice.
     return item ? (item.value.startsWith(`${item.label}:`) ? item.value : `${item.label} → ${item.value}`) : `${k} → removed`
   })
-  return `(Note from the app, not from the client: in the memory strip the client just changed: ${changes.join('; ')}. These replace anything said earlier in the chat. Start your reply with one short line confirming the change, then use the new values.)`
+  const budget = keys.includes('budgetGel') ? ' The budget changed: call search_listings again with it before you answer, so new matches appear.' : ''
+  return `(Note from the app, not from the client: in the memory strip the client just changed: ${changes.join('; ')}. These replace anything said earlier in the chat. Start your reply with one short line confirming the change, then use the new values.${budget})`
 }
 
 // The closing questions of the last answers, next to the client's message: a rule in the brief alone was not enough.

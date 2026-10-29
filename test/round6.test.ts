@@ -62,7 +62,7 @@ test('a payback under 6 months is called unusually fast in the profit table itse
     await runTool('profit_scenarios', { ref: '#2', revenue_monthly_gel: [10000, 20000, 30000], cost_of_goods_pct: 0, staff_monthly_gel: 0, utilities_monthly_gel: 0, other_monthly_gel: 0, tax_pct_of_revenue: 0, price_gel: 55000 }, half)
     // revenue 10 000, no costs: profit 10 000 → price 55 000 / 10 000 = 5.5
     const row = half.out.compare!.rows.find((r) => r.key === 'payback')!
-    assert.match(row.values[0]!, /^5\.5 თვე — უჩვეულოდ/)
+    assert.match(row.values[0]!, /^5,5 თვე — უჩვეულოდ/, 'a decimal comma in Georgian')
     // No cost of goods given for a bakery: its usual share is used, and the table says so.
     assert.match(ctx.out.compare!.rows.find((r) => r.key === 'cogs')!.label, /35%, ტიპური/)
     // Production test, 29 Oct: the whole cost template, every line in every table, whatever the model passed.
@@ -85,7 +85,7 @@ test('a dollar listing shows its dollar price first; converted lari are rounded,
     const l = toListing({ id: '63333333-0000-4000-8000-000000000003', title: 'კაფე', category: 'restaurants', deal_type: 'sale', price: 20000, currency: 'USD', city: 'Tbilisi', description: 'ქირა 450$ თვეში, კვირაში 7 000 ლარის ბრუნვა' }, { ...rates, USD: usd })
     const s = { ...snapshot, rates: { ...rates, USD: usd } } as unknown as CatalogSnapshot
     const sheet = factSheet(l, s, sessionStateSchema.parse({ refs: [l.id] }), 'ka') as Record<string, string>
-    assert.match(sheet.price!, /^\$20\s000 \(≈ 52\s000 ₾\) \*\(განცხადება\)\*$/, `at ${usd}`)
+    assert.match(sheet.price!, /^\$20\s000 \(≈ 52\s000 ₾\)$/, `at ${usd}`)
     assert.match(sheet.rent!, /^≈ 1\s200 ₾\/თვე \(\$450\)/, `at ${usd}`)
     assert.match(sheet.turnover!, /^≈ 30\s000 ₾\/თვე \(7\s000 ₾ კვირაში\)/, 'a weekly figure as months, rounded')
     const card = cardFor(l, s, sessionStateSchema.parse({ refs: [l.id] }), 'ka')

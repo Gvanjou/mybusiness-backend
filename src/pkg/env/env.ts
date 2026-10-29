@@ -62,7 +62,7 @@ const envSchema = z.object({
     .transform((v) => v === 'true'),
   GEMINI_LIVE_MODEL: z.string().min(1).default('gemini-3.8-live'),
   GEMINI_LIVE_VOICE: z.string().min(1).default('Kore'),
-  VOICE_MINUTES_PER_DAY: z.coerce.number().int().positive().default(20),
+  VOICE_MINUTES_PER_DAY: z.coerce.number().int().positive().default(60),
   CHAT_MESSAGES_PER_MINUTE: z.coerce.number().int().positive().default(10),
   CHAT_MESSAGES_PER_DAY: z.coerce.number().int().positive().default(200),
   SESSIONS_PER_HOUR: z.coerce.number().int().positive().default(20),

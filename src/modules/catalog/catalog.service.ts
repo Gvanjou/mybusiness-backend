@@ -225,8 +225,8 @@ export function areaOf(l: CatalogListing): number | null {
 // Listings to judge a price against: the same kind of business, in the same city when there are enough, and of a
 // similar size when the area is known — a 15 m² kiosk is never measured against 300 m² restaurants: with too few
 // listings of its size there is no comparison at all (an empty pool), not a comparison with every size.
-export function peerPool(l: CatalogListing, s: Snapshot, min = 3): { pool: CatalogListing[]; inCity: boolean; sized: [number, number] | null } {
-  const same = s.listings.filter((x) => x.id !== l.id && x.dealType === l.dealType && x.category === l.category && x.priceGel !== null)
+export function peerPool(l: CatalogListing, s: Snapshot, min = 3, category = l.category): { pool: CatalogListing[]; inCity: boolean; sized: [number, number] | null } {
+  const same = s.listings.filter((x) => x.id !== l.id && x.dealType === l.dealType && x.category === category && x.priceGel !== null)
   const local = same.filter((x) => x.city === l.city)
   const inCity = local.length >= min
   const pool = inCity ? local : same

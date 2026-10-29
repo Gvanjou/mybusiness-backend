@@ -64,6 +64,8 @@ function kindOf(l: CatalogListing, locale: Locale): string {
 }
 
 const GENERIC = ['other', 'services']
+// "9,6" in Georgian and Russian, "9.6" in English.
+export const decimal = (n: number, locale: Locale) => (locale === 'en' ? String(n) : String(n).replace('.', ','))
 // Georgian has no capitals (toUpperCase would turn Mkhedruli into Mtavruli letters).
 const capital = (text: string, locale: Locale) => (locale === 'ka' ? text : text.charAt(0).toUpperCase() + text.slice(1))
 
@@ -156,13 +158,17 @@ export type Peers = { medianGel: number; count: number; diffPct: number; basisUi
 
 export function peers(l: CatalogListing, s: CatalogSnapshot, locale: Locale): Peers | null {
   if (l.priceGel === null) return null
-  const { pool, inCity, sized } = peerPool(l, s)
+  // The group is what the title says the business is ("კაფე" filed under bakery is compared with cafés); a listing
+  // filed as "other" with no clearer name is compared with nothing: "82 % cheaper than other" misled a tester.
+  const kind = categoriesNamed(`${pick(l.title, 'ka')} ${pick(l.title, 'en')}`).find((c) => !GENERIC.includes(c)) ?? (GENERIC.includes(l.category) ? null : l.category)
+  if (!kind) return null
+  const { pool, inCity, sized } = peerPool(l, s, 3, kind)
   if (pool.length < 3) return null
   const prices = pool.map((x) => x.priceGel!).sort((a, b) => a - b)
   const mid = Math.floor(prices.length / 2)
   const median = Math.round(prices.length % 2 ? prices[mid]! : (prices[mid - 1]! + prices[mid]!) / 2)
   const where = inCity && l.city ? cityLabel(l.city, locale) : pick(t('ყველა ქალაქი', 'all cities', 'все города'), locale)
-  const basisUi = `${pool.length} · ${categoryLabel(l.category, locale).toLowerCase()} · ${where}${sized ? ` · ${sized[0]}–${sized[1]} ${AREA_UNIT[locale]}` : ''}`
+  const basisUi = `${pool.length} · ${categoryLabel(kind, locale).toLowerCase()} · ${where}${sized ? ` · ${sized[0]}–${sized[1]} ${AREA_UNIT[locale]}` : ''}`
   return { medianGel: median, count: pool.length, diffPct: Math.round((l.priceGel / median - 1) * 100), basisUi }
 }
 
@@ -171,12 +177,6 @@ export function peers(l: CatalogListing, s: CatalogSnapshot, locale: Locale): Pe
 type Place = SessionState['places'][string]
 type Source = 'listing' | 'seller' | 'calc' | 'map'
 
-const SOURCE: Record<Source, Localized> = {
-  listing: t('(განცხადება)', '(listing)', '(объявление)'),
-  seller: t('(გამყიდველის თქმით)', '(seller says)', '(со слов продавца)'),
-  calc: t('(გათვლა)', '(calculated)', '(расчёт)'),
-  map: t('(რუკა)', '(map)', '(карта)'),
-}
 
 const W = {
   notStated: t('არ არის მითითებული', 'not stated', 'не указано'),
@@ -206,7 +206,7 @@ function doubtsOf(l: CatalogListing, s: CatalogSnapshot, locale: Locale, area: n
   const profit = i?.financials.profit_monthly ? monthlyGel(i.financials.profit_monthly, s.rates) : null
   if (profit && profit[1] > 0 && l.priceGel) {
     const months = l.priceGel / profit[1]
-    if (months < 6) out.push(say(W.fastPayback, locale, { m: Math.max(0.1, Math.round(months * 10) / 10) }))
+    if (months < 6) out.push(say(W.fastPayback, locale, { m: decimal(Math.max(0.1, Math.round(months * 10) / 10), locale) }))
   }
   return out
 }
@@ -268,7 +268,9 @@ export function rememberPlace(state: SessionState, id: string, brief: { radiusM:
 // state is named in not_stated.
 export function factSheet(l: CatalogListing, s: CatalogSnapshot, state: SessionState, locale: Locale, budget?: number) {
   const f = listingFacts(l, s, state, locale, budget)
-  const q = (x: NonNullable<Fact>) => `${x.value} *${pick(SOURCE[x.source], locale)}*`
+  // Plain values, no source in brackets (a bracket after every line read badly). What comes from the seller's own
+  // text is named once, in seller_says, so the answer can call it a claim in words.
+  const q = (x: NonNullable<Fact>) => x.value
   const isProperty = f.rentIncome || ['real_estate', 'commercial_space', 'offices', 'warehouse', 'land'].includes(l.category)
   const reason = l.insights?.reasonForSale
   // The listing's own facts, in this order; the ones it does not state are only named in not_stated (the sheets go
@@ -287,6 +289,7 @@ export function factSheet(l: CatalogListing, s: CatalogSnapshot, state: SessionS
   ]
   const stated = facts.flatMap(([k, x]) => (x ? [[k, typeof x === 'string' ? x : q(x)] as const] : []))
   const notStated = facts.filter(([, x]) => !x).map(([k]) => k)
+  const sellerSays = facts.flatMap(([k, x]) => (x && typeof x !== 'string' && x.source === 'seller' ? [k] : []))
   const name = shortName(l, locale)
   const type = categoryLabel(l.category, locale)
   return {
@@ -299,7 +302,8 @@ export function factSheet(l: CatalogListing, s: CatalogSnapshot, state: SessionS
     ...(f.overBudget && f.budget ? { budget: q(f.budget) } : {}),
     // No competitors line: the map was not read yet (the brief says to call location_analysis first).
     ...(f.competitors ? { competitors: q(f.competitors) } : {}),
-    ...(f.doubts.length ? { check: `${f.doubts.join('; ')} *${pick(SOURCE.calc, locale)}*` } : {}),
+    ...(sellerSays.length ? { seller_says: sellerSays.join(', ') } : {}),
+    ...(f.doubts.length ? { check: f.doubts.join('; ') } : {}),
     // The score an earlier answer gave: repeated, not redone (see the brief).
     ...(state.scores[l.id] ? { score: state.scores[l.id] } : {}),
     ...(notStated.length ? { not_stated: notStated.join(', ') } : {}),
