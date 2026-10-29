@@ -63,8 +63,10 @@ test('nothing on screen and an empty profile: no next steps', () => {
   assert.deepEqual(nextSteps(ctx(), [], null), [])
 })
 
-test('profile complete but no results yet: offer to show options, as the action chip', () => {
-  const profile = { budgetGel: { value: 50000, status: 'known', turn: 1 }, goal: { value: 'passive_income', status: 'known', turn: 1 }, cities: { value: ['Tbilisi'], status: 'known', turn: 1 } }
+test('enough to choose by but no results yet: offer to show options, as the action chip; a budget alone is not enough', () => {
+  const base = { budgetGel: { value: 50000, status: 'known', turn: 1 }, goal: { value: 'passive_income', status: 'known', turn: 1 }, cities: { value: ['Tbilisi'], status: 'known', turn: 1 } }
+  assert.ok(!keys(nextSteps(ctx({ profile: base }), ['update_profile'], null)).includes('show'), 'no kind of business: the listings would be a random mix')
+  const profile = { ...base, sectors: { value: ['restaurants'], status: 'known', turn: 1 } }
   const chips = nextSteps(ctx({ profile }), ['update_profile'], null)
   assert.equal(chips[0]?.kind, 'action')
   assert.deepEqual(keys(chips), ['show', 'check'])

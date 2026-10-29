@@ -121,14 +121,19 @@ test('a form with no words still gets an intro line, so the history has no empty
   assert.equal(r.of('form').length, 1)
 })
 
-test('a business type named in the message is pre-selected in the form, not asked again', async () => {
-  script = async function* () {
-    const c = { name: 'show_form', args: {} }
-    yield { type: 'done', model: 'stub', parts: [{ text: 'რამდენიმე კითხვა.' }, { functionCall: c }], calls: [c] }
+test('a business type named in the message is enough to search on: the form is refused and the model is told to search', async () => {
+  script = async function* (_params, n) {
+    if (n === 1) {
+      const c = { name: 'show_form', args: {} }
+      yield { type: 'done', model: 'stub', parts: [{ functionCall: c }], calls: [c] }
+      return
+    }
+    yield { type: 'text', text: 'რა ბიუჯეტი გაქვთ?' }
+    yield { type: 'done', model: 'stub', parts: [{ text: 'რა ბიუჯეტი გაქვთ?' }], calls: [] }
   }
   const r = await run('რესტორანი მინდა ვიყიდო, დამეხმარეთ')
-  const form = r.of('form')[0] as { questions: { field: string; selected?: string }[] }
-  assert.equal(form.questions.find((q) => q.field === 'sector')?.selected, 'restaurants,bar_nightclub')
+  assert.equal(calls, 2, 'the refusal goes back to the model')
+  assert.equal(r.of('form').length, 0)
 })
 
 test('the last step offers only chips, so a model that keeps calling tools still produces an answer', async () => {

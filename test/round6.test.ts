@@ -128,8 +128,9 @@ test("the seller message never carries the chat's own numbers", async () => {
   assert.equal(ctx.out.handoff!.text, 'გამარჯობა! დაინტერესებული ვარ საცხობის ბიზნესით. რა არის რეალური თვიური ბრუნვა?')
 })
 
-test('type and budget named: listings at once, no form; a vaguer start still gets the form', () => {
+test('the kind of business named: listings at once, no form; nothing or only a budget to go on: the form', () => {
   assert.equal(formWanted({ sectors: known(['restaurants']), budgetGel: known(50000) }), false)
+  assert.equal(formWanted({ sectors: known(['restaurants']) }), false, 'only the kind of business: enough to search on')
   assert.equal(formWanted({ budgetGel: known(50000) }), true, 'only a budget')
   assert.equal(formWanted({}), true)
 })

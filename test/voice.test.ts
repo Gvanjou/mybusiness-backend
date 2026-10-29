@@ -99,7 +99,7 @@ test('each user has a daily allowance of voice minutes; a short call gives back 
 
 test("a tool call runs on the chat's own state; only the call's tools run; what they show is saved with the turn", async () => {
   messages.length = 0
-  const refused = await callTool(session(), 'create_alert', {})
+  const refused = await callTool(session(), 'show_form', {})
   assert.match(JSON.stringify(refused.result), /Unknown tool/)
 
   const note = await callTool(session(), 'show_note', { markdown: '- ქირა\n- <b>ბრუნვა</b>' })

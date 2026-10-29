@@ -13,15 +13,13 @@ import { quota } from '../ai/ai.quota.js'
 import { requireUser, type User } from '../auth/auth.service.js'
 import { clearOpenConversation, openConversationId, setOpenConversation } from './chat.cookie.js'
 import { z } from 'zod'
-import { alerts } from '../alerts/alerts.service.js'
 import { catalog } from '../catalog/catalog.service.js'
 import { normalizeCity, knownCategoryKeys } from '../catalog/catalog.labels.js'
 import { applyPatch } from './profile/profile.merge.js'
 import { agentTurn } from './agent/agent.service.js'
-import { cardFor } from './agent/agent.facts.js'
 import { AUDIO_TYPES, MAX_AUDIO_BYTES, MIN_AUDIO_BYTES, transcribe } from './voice/voice.service.js'
 import { callTool, isSlowTool, saveTurn, startCall } from './voice/voice.live.js'
-import { createSessionSchema, feedbackSchema, sendMessageSchema, sessionStateSchema } from './chat.model.js'
+import { createSessionSchema, feedbackSchema, sendMessageSchema } from './chat.model.js'
 import { chatRepository, type Session } from './chat.repository.js'
 import { profileItems, entryQuickReplies, texts } from './templates/templates.js'
 
@@ -249,34 +247,6 @@ export const chatRoutes = new Hono()
     state.profileEdited = [...new Set([...state.profileEdited, body.key])]
     await chatRepository.saveSession({ ...session, profile, state })
     return c.json({ items: profileItems(profile, session.locale) })
-  })
-
-  // Saved searches with listings published since the client last looked.
-  .get('/alerts', async (c) => {
-    const user = await requireUser(c)
-    const [s, list] = await Promise.all([catalog.get(), alerts.listForUser(user.id)])
-    const open = openConversationId(c)
-    const locale = (open && (await chatRepository.findForUser(open, user.id))?.locale) || 'ka'
-    return c.json({
-      items: list.map((a) => {
-        const fresh = alerts.newMatches(a, s)
-        // These cards are not numbered: they belong to no chat yet.
-        const cards = fresh.slice(0, 3).map((l) => ({ ...cardFor(l, s, sessionStateSchema.parse({}), locale), n: undefined }))
-        return { id: a.id, label: a.label, newCount: fresh.length, cards }
-      }),
-    })
-  })
-
-  .post('/alerts/:id/seen', limit, async (c) => {
-    const user = await requireUser(c)
-    await alerts.markSeen(user.id, c.req.param('id'))
-    return c.body(null, 204)
-  })
-
-  .delete('/alerts/:id', async (c) => {
-    const user = await requireUser(c)
-    if (!(await alerts.remove(user.id, c.req.param('id')))) throw new AppError('not_found', 'Alert not found')
-    return c.body(null, 204)
   })
 
   .post('/messages', limit, async (c) => {

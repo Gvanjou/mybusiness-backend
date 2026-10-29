@@ -38,7 +38,8 @@ const known = <T>(value: T) => ({ value, status: 'known' as const, turn: 1 })
 
 test('only tools that can run are offered: no form once the key facts are known, no earlier chats when there are none', () => {
   const names = (ctx: ToolContext) => toolsFor(ctx).map((t) => t.name)
-  assert.ok(names(ctxOf()).includes('show_form'), 'nothing known yet: the form is offered')
+  assert.ok(names({ ...ctxOf(), userText: 'მინდა ფულის ჩადება, არ ვიცი რაში' }).includes('show_form'), 'nothing to go on yet: the form is offered')
+  assert.ok(!names(ctxOf()).includes('show_form'), '"კაფე მინდა": enough to search on, no form')
   assert.ok(!names(ctxOf({ budgetGel: known(50000), cities: known(['Tbilisi']), involvement: known('part_time') })).includes('show_form'))
   assert.ok(!names(ctxOf()).includes('recall_previous_chats'))
   assert.ok(names(ctxOf({}, [{ id: 'x', title: 't', updatedAt: '', profile: {}, listings: [] }] as unknown as ToolContext['earlier'])).includes('recall_previous_chats'))
@@ -131,4 +132,17 @@ test('only the latest answer goes to the model at length; older ones keep their 
   const [older, latest] = contents.filter((c) => c.role === 'model').map((c) => c.parts![0]!.text!)
   assert.ok(older!.startsWith('**პირველი**') && older!.length <= 602 && older!.endsWith('…'))
   assert.equal(latest!.length, 2500)
+})
+
+test('the briefs: the question decides the answer, an opinion is always given, and nothing is promised that the app cannot do', async () => {
+  const { agentSystem } = await import('../src/modules/chat/agent/agent.prompt.js')
+  const { voiceSystem } = await import('../src/modules/chat/voice/voice.prompt.js')
+  const { toolDeclarations } = await import('../src/modules/chat/agent/agent.tools.js')
+  assert.ok(!toolDeclarations.some((t) => /alert/.test(t.name ?? '')), 'there is no alert tool')
+  for (const brief of [agentSystem('ka', {}), voiceSystem('ka', {})]) {
+    assert.match(brief, /cannot notify or contact anyone/)
+    assert.doesNotMatch(brief, /create_alert|alert/i)
+    assert.match(brief, /never a reason not to answer/)
+  }
+  assert.match(agentSystem('ka', {}), /never after a general question, never as a default start/i)
 })

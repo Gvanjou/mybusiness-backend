@@ -1,7 +1,6 @@
 import { Type, type FunctionDeclaration } from '@google/genai'
 import { formatGel, pick, type Locale } from '../../../shared/i18n/locale.js'
-import { alerts } from '../../alerts/alerts.service.js'
-import { categoriesNamed, categoryLabel, cityLabel, knownCategoryKeys, normalizeCity } from '../../catalog/catalog.labels.js'
+import { categoriesNamed, knownCategoryKeys, normalizeCity } from '../../catalog/catalog.labels.js'
 import type { CatalogListing } from '../../catalog/catalog.model.js'
 import { areaOf, catalog, type CatalogSnapshot } from '../../catalog/catalog.service.js'
 import { analyzeArea, competitionBrief, locateAddress, locateListing } from '../../competition/area.service.js'
@@ -26,12 +25,11 @@ import type { IntakeForm } from './agent.model.js'
 
 // Everything the assistant can do besides talking: listings read live from mybusiness.ge, location and
 // competition from the map, our analysis, arithmetic, the web, and the UI (cards, chips, the intake form, the
-// message to the seller, the visit checklist, alerts). Gemini decides when to call them; the results are facts it
+// message to the seller, the visit checklist). Gemini decides when to call them; the results are facts it
 // writes from. Tool output is kept compact: every token is paid for.
 
 export type Handoff = { listingId: string; n: number; name: string; url: string; text: string }
 export type Checklist = { listingId: string; n: number; name: string; items: string[] }
-export type AlertCard = { id: string; label: string }
 
 export type ToolOutput = {
   cards: ListingCard[]
@@ -42,11 +40,10 @@ export type ToolOutput = {
   formRequested?: boolean // show_form was called: the standard form is built at the end of the turn
   handoff: Handoff | null // a ready message to the seller
   checklist: Checklist | null // what to check on site
-  alert: AlertCard | null // a saved search was created
   note: string | null // voice calls: what the AI put on screen instead of reading it out (show_note)
 }
 
-export const emptyOutput = (): ToolOutput => ({ cards: [], compare: null, sources: [], quickReplies: [], form: null, handoff: null, checklist: null, alert: null, note: null })
+export const emptyOutput = (): ToolOutput => ({ cards: [], compare: null, sources: [], quickReplies: [], form: null, handoff: null, checklist: null, note: null })
 
 export type ToolContext = {
   s: CatalogSnapshot // replaced by a live snapshot when a tool fetches from the site
@@ -85,7 +82,7 @@ const scenarios = (description: string) => list({ type: Type.NUMBER }, `${descri
 export const toolDeclarations: FunctionDeclaration[] = [
   {
     name: 'search_listings',
-    description: 'Businesses for sale on mybusiness.ge, ranked for this client and shown as numbered cards; returns their fact sheets. The profile (budget, cities, types) always applies.',
+    description: 'Businesses for sale on mybusiness.ge, ranked for this client and shown as numbered cards; returns their fact sheets. The profile (budget, cities, types) always applies. Useful once the kind of business is known, or the client asks to see listings anyway: with only a budget the results are a random mix.',
     parameters: {
       type: Type.OBJECT,
       properties: {
@@ -214,7 +211,7 @@ export const toolDeclarations: FunctionDeclaration[] = [
   },
   {
     name: 'show_form',
-    description: 'The fixed intake form (budget, goal, time, city, type), pre-filled with what is known. Only when two or more of budget, time, city and type are unknown. Ends your turn.',
+    description: 'The fixed intake form (budget, goal, time, city, type), pre-filled with what is known. Only for a client who wants options but has not said what kind of business. Never for a general question. Ends your turn.',
     parameters: { type: Type.OBJECT, properties: {} },
   },
   {
@@ -233,19 +230,6 @@ export const toolDeclarations: FunctionDeclaration[] = [
     name: 'visit_checklist',
     description: 'A tickable on-site checklist kept with the listing. Use when the client plans a visit.',
     parameters: { type: Type.OBJECT, properties: { ref: refParam, items: list(str('Short, in the reply language'), '6 to 10, most important first') }, required: ['ref', 'items'] },
-  },
-  {
-    name: 'create_alert',
-    description: 'Save a search: a notice appears at the top of this chat when a new match is listed (nothing by email or phone). Only after the client said yes to being told. Defaults to the profile.',
-    parameters: {
-      type: Type.OBJECT,
-      properties: {
-        categories: categoryKeys('Business types'),
-        cities: cityList,
-        max_price_gel: num('Price limit in GEL'),
-        label: str('Short name in the reply language, e.g. "კაფე ბათუმში, 30 000 ₾-მდე"'),
-      },
-    },
   },
 ]
 
@@ -405,12 +389,13 @@ const executors: Record<string, Executor> = {
     ctx.state.contextListingId = undefined
     if (top.length === 0) {
       const options = relaxations(ctx.s, p, { track, strictSectors: categories.length > 0 }, result.pool.length)
-      return { matches: 0, ways_to_widen: options.map((o) => ({ option: o.kind, extra_listings: o.extra })), note: 'Nothing matches all criteria right now. Offer the widening options first; then ask whether to tell them when one appears (yes/no chips), and call create_alert only after a yes.' }
+      return { matches: 0, ways_to_widen: options.map((o) => ({ option: o.kind, extra_listings: o.extra })), note: 'Nothing matches all criteria right now. Say so plainly, then offer the nearest alternatives: these ways to widen (another city, a related kind of business, a higher budget), with how many listings each adds. The app cannot notify anyone: never offer to tell the client later.' }
     }
     return {
       matches: result.ranked.length + (result.wildcard ? 1 : 0),
       data_source: `live from mybusiness.ge (${ctx.s.loadedAt.toISOString().slice(11, 16)} UTC)`,
       budget_note: top.some((r) => r.listing.priceGel !== null && budgetOf(ctx) && r.listing.priceGel > budgetOf(ctx)!) ? 'Some listings are over the budget (see each fact sheet\'s "budget" line): say so plainly, with the amount, before recommending one.' : undefined,
+      kind_note: has(p, 'sectors') ? undefined : 'No kind of business is known, so these are a mix across types: say so in one line and ask what kind interests them.',
       shown: top.map((r) => ({
         ...sheet(ctx, r.listing),
         fit: { score: r.score, reasons: r.reasons },
@@ -731,7 +716,7 @@ const executors: Record<string, Executor> = {
     if (named.length) ctx.profile = applyPatch(ctx.profile, { sectors: named }, ctx.turn).profile
     const missing = missingKeyFacts(ctx.profile)
     if (!formWanted(ctx.profile)) {
-      return { error: `Do not show the form: only ${missing.length ? missing.join(' and ') : 'nothing'} is unknown and the client named what they want. ${missing.length ? 'Search now, and ask about the most important missing fact in one short question at the end.' : 'Search now.'}` }
+      return { error: `Do not show the form: there is enough to search on. Search now${missing.length ? `; at the end, ask in one short question about the most important missing fact (${missing.join(', ')})` : ''}.` }
     }
     ctx.out.formRequested = true
     return { shown: true, note: 'The form appears under your reply with what the client already said pre-selected. Write one short sentence before it; do not list its questions.' }
@@ -761,26 +746,6 @@ const executors: Record<string, Executor> = {
     focus(ctx, l)
     markTopic(ctx.state, l.id, 'visit')
     return { shown: true, note: 'The tickable checklist is on screen and stays with the listing. Nothing is scheduled: say the checklist is ready, never that a visit is planned. Do not repeat the items; add only what matters most.' }
-  },
-
-  async create_alert(args, ctx) {
-    if (!ctx.userId) return { error: 'Alerts need a signed-in client.' }
-    // Types the model named but that match no key fall back to the profile: an alert for every type is never meant.
-    const named = categoryArgs(args.categories, (c) => knownCategoryKeys.includes(c))
-    const categories = named.length || (Array.isArray(args.categories) && !args.categories.length) ? named : (val(ctx.profile, 'sectors') ?? []).filter((c) => knownCategoryKeys.includes(c))
-    const cities = ((args.cities as string[] | undefined) ?? val(ctx.profile, 'cities') ?? []).map((c) => normalizeCity(String(c), ctx.s.cities)).filter((c): c is string => c !== null)
-    const maxPriceGel = typeof args.max_price_gel === 'number' && args.max_price_gel > 0 ? Math.round(args.max_price_gel) : (val(ctx.profile, 'budgetGel') ?? null)
-    const label =
-      typeof args.label === 'string' && args.label.trim()
-        ? args.label.trim()
-        : [categories.map((c) => categoryLabel(c, ctx.locale)).join(', '), cities.map((c) => cityLabel(c, ctx.locale)).join(', '), maxPriceGel ? `≤ ${maxPriceGel} ₾` : ''].filter(Boolean).join(' · ')
-    try {
-      const a = await alerts.create(ctx.userId, label, { categories, cities, maxPriceGel })
-      ctx.out.alert = { id: a.id, label: a.label }
-      return { saved: true, label: a.label, note: 'Say how it works, in one or two lines: when a matching listing is added, a notice appears at the top of this chat, which they see when they open it; nothing comes by email or phone. They can remove the alert from the memory strip.' }
-    } catch {
-      return { error: 'Alerts are not available right now; suggest checking back later.' }
-    }
   },
 }
 

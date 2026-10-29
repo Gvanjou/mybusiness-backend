@@ -61,11 +61,16 @@ test('profit_scenarios: three scenarios with the same cost lines, computed in co
   assert.ok(missing.error, 'three revenues are needed')
 })
 
-test('show_form: only while two or more key facts are unknown; the form itself is the standard one', async () => {
+test('show_form: only while the kind of business is unknown and little else is known; the form itself is the standard one', async () => {
   const c = ctx()
   const r = (await runTool('show_form', {}, c)) as { shown?: boolean }
   assert.equal(r.shown, true)
   assert.equal(c.out.formRequested, true)
+
+  const typeOnly = { ...ctx(), profile: { sectors: known(['restaurants']) } }
+  const search = (await runTool('show_form', {}, typeOnly)) as { error?: string }
+  assert.match(search.error ?? '', /Search now/, 'the kind of business alone is enough to search on')
+  assert.equal(typeOnly.out.formRequested, undefined)
 
   const almost = { ...ctx(), profile: { budgetGel: known(50000), involvement: known('part_time' as const), cities: known(['Tbilisi']) } }
   const refused = (await runTool('show_form', {}, almost)) as { error?: string }

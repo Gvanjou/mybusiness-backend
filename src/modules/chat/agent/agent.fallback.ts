@@ -5,7 +5,7 @@ import type { IntakeForm } from './agent.model.js'
 
 // The intake form is the same every time: the same questions, the same budget buckets, the same cities and real
 // business types, "Other" and "Any" last. What the client already said is pre-selected, never asked again. The model
-// only decides when to show it, and only while two or more key facts are missing.
+// decides when to show it: to a client who wants options but has not said what kind of business.
 
 // What the reply promised must be on screen. When the model writes "fill in the questions below" but no form came
 // with it, or "here are the options" without searching, the app delivers it itself — whatever the model did.
@@ -43,12 +43,12 @@ export function missingKeyFacts(p: Profile): KeyFact[] {
   return out
 }
 
-// When the intake form is the right next step: two or more key facts unknown, unless the client already named both
-// the kind of business and the budget ("რესტორანი მინდა, 50 ათასი"). Then they see listings at once, with one
-// question about what is still missing (the decision after round 6, which found the two rules disagreeing).
+// When the intake form may be shown: the kind of business is unknown and little else is, so there is nothing to
+// search on yet. A kind of business alone ("კაფე მინდა") is enough: the client sees listings at once, with one
+// question about what matters most of the rest. Whether they want options at all is the model's call.
 export function formWanted(p: Profile): boolean {
   const missing = missingKeyFacts(p)
-  return missing.length >= 2 && (missing.includes('type') || missing.includes('budget'))
+  return missing.includes('type') && missing.length >= 2
 }
 
 // Budget buckets: the value is the upper bound in GEL (the top bucket stands for "more than 200 000").

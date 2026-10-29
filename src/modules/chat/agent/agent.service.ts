@@ -357,7 +357,6 @@ export async function agentTurn(params: Params): Promise<void> {
   if (out.form) await emit('form', out.form)
   if (out.handoff) await emit('handoff', out.handoff)
   if (out.checklist) await emit('checklist', out.checklist)
-  if (out.alert) await emit('alert', out.alert)
   // The app's next steps go after the model's answers and follow the listing the answer is about (its first "#n"),
   // unless the turn was a fresh shortlist. A yes/no closing question gets its two answers when the model gave none.
   const about = !calledTools.includes('search_listings') ? listingOf(reply, ctx) : undefined
@@ -597,7 +596,6 @@ async function saveAnswer(session: Session, a: Saved): Promise<number> {
       form: a.out.form ?? undefined,
       handoff: a.out.handoff ?? undefined,
       checklist: a.out.checklist ?? undefined,
-      alert: a.out.alert ?? undefined,
       model: modelName(a.model),
       incomplete: a.incomplete || undefined,
     },

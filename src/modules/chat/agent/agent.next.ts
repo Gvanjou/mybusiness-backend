@@ -67,7 +67,9 @@ export function nextSteps(ctx: ToolContext, calledTools: string[], justClicked: 
   const focus = (state.contextListingId && ctx.s.byId.get(state.contextListingId)) || (shown.length === 1 ? shown[0] : undefined)
   const city = val(profile, 'cities')?.[0] ?? focus?.city ?? null
   const sector = val(profile, 'sectors')?.[0] ?? focus?.category ?? null
-  const ready = has(profile, 'budgetGel') && (has(profile, 'goal') || has(profile, 'involvement'))
+  // "Show options" only once there is something to choose by: the kind of business, or "any" picked on purpose (an
+  // empty list). With a budget alone the listings would be a random mix.
+  const ready = has(profile, 'sectors') && has(profile, 'budgetGel') && (has(profile, 'goal') || has(profile, 'involvement'))
 
   // With two or more listings on screen the next step is about all of them; with one, about that one.
   let keys: NextKey[]
