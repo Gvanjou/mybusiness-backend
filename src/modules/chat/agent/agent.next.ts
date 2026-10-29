@@ -40,7 +40,7 @@ const ICON: Record<NextKey, NonNullable<QuickReply['icon']>> = {
 // What a chip or a message is about. Two chips about the same thing are one chip; a topic just answered is not offered.
 const TOPICS: [string, RegExp][] = [
   ['compare', /შეადარ|შედარებ|compare|сравн/i],
-  ['best', /რომელი\s+(?:უფრო\s+)?(?:ჯობია|მირჩევ|ნაკლებად)|which (?:one |of these )?is (?:better|less)|какой (?:из них )?(?:лучше|менее)/i],
+  ['best', /რომელი\s+(?:უფრო\s+)?(?:ჯობია|მირჩევ|ნაკლებად)|რას\s+მირჩევ|მირჩევდი|(?<!\p{L})რომელ\p{L}*\s+(?:\p{L}+\s+){0,2}(?:ნაკლებ|უკეთეს|ჯობ)|which (?:one |of these )?is (?:better|less)|what would you (?:recommend|choose|pick)|which would you|какой (?:из них )?(?:лучше|менее)|что (?:бы )?(?:вы )?посовету|что бы вы выбрали/iu],
   ['location', /ლოკაცი|მდებარეობ|კონკურენ|location|compet|локац|конкурен|располож/i],
   ['risks', /რისკ|risk|риск/i],
   ['profit', /მოგებ|ანაზღაურ|შემოსავ|სცენარ|profit|payback|income|прибыл|окупа|доход/i],
@@ -119,8 +119,11 @@ const OPEN_QUESTION = /(^|\s)(რა|რას|რომელ\S*|როგო�
 
 const isYesNo = (q: string) => YES_NO.test(q) || OR_NOT.test(q) || (SHALL_I.test(q) && !OPEN_QUESTION.test(q))
 
+// "Any other questions?" moves nothing forward: no buttons for it.
+const OPEN_ENDED = /სხვა\s+(?:შე)?კითხვ|other questions|anything else|другие вопросы|ещё вопрос|еще вопрос/i
+
 export function yesNoChips(question: string | null, locale: 'ka' | 'en' | 'ru'): QuickReply[] {
-  if (!question || !isYesNo(question.trim())) return []
+  if (!question || OPEN_ENDED.test(question) || !isYesNo(question.trim())) return []
   return [
     { kind: 'message', id: 'ai:yes', label: YES[locale], text: YES[locale] },
     { kind: 'message', id: 'ai:no', label: NO[locale], text: NO[locale] },
@@ -131,7 +134,7 @@ export function yesNoChips(question: string | null, locale: 'ka' | 'en' | 'ru'):
 // ბათუმში?" and "Сколько времени…?" had none): yes/no; the options of an either/or question; the form's own options
 // for a question about time or the city.
 export function answerChips(question: string | null, locale: 'ka' | 'en' | 'ru'): QuickReply[] {
-  if (!question) return []
+  if (!question || OPEN_ENDED.test(question)) return []
   const q = question.trim()
   if (isYesNo(q)) return yesNoChips(q, locale)
   const message = (label: string, i: number): QuickReply => ({ kind: 'message', id: `ai:${i}`, label, text: label })

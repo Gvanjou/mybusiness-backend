@@ -3,9 +3,9 @@ import { formatGel, pick, type Locale } from '../../../shared/i18n/locale.js'
 import { logger, errorFields } from '../../../shared/logger/logger.js'
 import { AppError } from '../../../shared/http/app-error.js'
 import { ai } from '../../ai/ai.gateway.js'
-import { chainFor, chatModels, MODEL_INFO, modelChains } from '../../ai/ai.models.js'
+import { chainFor, chatModels, liteFirst, MODEL_INFO, modelChains } from '../../ai/ai.models.js'
 import { quota } from '../../ai/ai.quota.js'
-import { categoriesNamed, categoryLabel } from '../../catalog/catalog.labels.js'
+import { categoriesNamed, categoryLabel, citiesNamed } from '../../catalog/catalog.labels.js'
 import { catalog } from '../../catalog/catalog.service.js'
 import type { Emit, SendMessage } from '../chat.model.js'
 import { chatRepository, type Session, type StoredMessage } from '../chat.repository.js'
@@ -35,6 +35,8 @@ const MAX_CONTINUATIONS = 2
 const HISTORY = 8
 // Time to START model calls in one turn, tool calls included. Past this the client has waited long enough.
 const TURN_BUDGET_MS = 55_000
+// Out of time after the tools ran but before a word: one last step, quick models first, may still start within this.
+const RESCUE_MS = 20_000
 // Slow failed requests one message may afford across all its steps and fallbacks (see CallMeta.attempts).
 const MAX_ATTEMPTS = 4
 
@@ -118,6 +120,13 @@ export async function agentTurn(params: Params): Promise<void> {
     const money = statedMoney(input.text, s.rates)
     if (money && money.gel !== val(profile, 'budgetGel')) profile = applyPatch(profile, budgetPatch(money), turn).profile
   }
+  // So are the kind of business and the city a statement names ("ავტოსამრეცხაო მინდა ბათუმში"), while the profile has
+  // none: the memory keeps what the client said even when the model does not save it. A question only mentions them.
+  if (input.text && !/\?\s*$/.test(input.text.trim())) {
+    const sectors = has(profile, 'sectors') ? [] : categoriesNamed(input.text)
+    const cities = has(profile, 'cities') || has(profile, 'locationFlexible') ? [] : citiesNamed(input.text)
+    if (sectors.length || cities.length) profile = applyPatch(profile, { ...(sectors.length ? { sectors } : {}), ...(cities.length ? { cities } : {}) }, turn).profile
+  }
 
   // The conversation so far, as text (tool calls from earlier turns are not replayed; the fact sheets carry them).
   // A change the client made in the memory strip is spelled out with this message, so it outweighs older answers.
@@ -160,7 +169,7 @@ export async function agentTurn(params: Params): Promise<void> {
   const only = input.model && input.model !== 'auto' && modelChains.responder.includes(input.model) ? input.model : undefined
   if (only && quota.status(only).status === 'limit') return unavailable(session, { title, profile, state, locale, only, userMessageId })
   const justClicked = clickedKey(state.nextShown, userText)
-  const endsAt = Date.now() + TURN_BUDGET_MS
+  let endsAt = Date.now() + TURN_BUDGET_MS
   const stop = new AbortController()
   const stepSignal = AbortSignal.any([signal, stop.signal])
   let reply = ''
@@ -170,8 +179,9 @@ export async function agentTurn(params: Params): Promise<void> {
   let mainSteps = 0
   let incomplete = false
   // Auto: Flash-Lite first for quick questions, the Flash models first for comparisons, risk, location and profit.
-  const chain = only ? undefined : chainFor(userText)
+  let chain: readonly string[] | undefined = only ? undefined : chainFor(userText)
   const attempts = { left: MAX_ATTEMPTS }
+  let rescue = false // the last short step after running out of time (see RESCUE_MS)
   const started = Date.now()
 
   // Cards and the table go out as soon as a tool has them, so the client sees the listings while the text is written.
@@ -190,16 +200,27 @@ export async function agentTurn(params: Params): Promise<void> {
 
   try {
     for (;;) {
-      const left = endsAt - Date.now()
+      let left = endsAt - Date.now()
       if (left < 3_000) {
-        if (!reply) throw new Error('agent turn out of time before any text')
-        logger.warn('agent turn out of time; answering with what is written', { session: session.id })
-        incomplete = true
-        break
+        if (!reply && calledTools.length && !rescue) {
+          // The tools' work is not thrown away for "try again": one last short step writes the answer from what they
+          // returned, on the quick models first.
+          logger.warn('agent turn out of time after its tools; one last step writes the answer', { session: session.id })
+          rescue = true
+          endsAt = Date.now() + RESCUE_MS
+          left = RESCUE_MS
+          if (chain) chain = liteFirst(chain)
+          attempts.left = Math.max(attempts.left, 1)
+        } else {
+          if (!reply) throw new Error('agent turn out of time before any text')
+          logger.warn('agent turn out of time; answering with what is written', { session: session.id })
+          incomplete = true
+          break
+        }
       }
       const isContinuation = continuing
       if (!isContinuation) mainSteps++
-      const last = mainSteps >= MAX_STEPS
+      const last = rescue || mainSteps >= MAX_STEPS
       // The last step must answer in text: with nothing written yet it gets no tools at all, otherwise only chips.
       const chipsOnly = reply.trim() && !out.quickReplies.length ? toolDeclarations.filter((t) => t.name === 'suggest_replies') : []
       const tools = isContinuation || last ? chipsOnly : toolsFor(ctx)
@@ -291,8 +312,11 @@ export async function agentTurn(params: Params): Promise<void> {
       // Chips or a form complete the turn only when the reply already has text and the UI really gets them. A model
       // often calls them first and writes after it sees the result; and a refused show_form must not end the turn
       // with "fill in the form below" and no form: the model sees the error and asks in text.
+      // A form shown under text ends the turn even when the same step also saved a fact: another step would only write
+      // a second introduction to the same form.
+      const formShown = Boolean(out.formRequested) && result.calls.some((c) => c.name === 'show_form')
       const delivered = Boolean(out.formRequested) || out.quickReplies.length > 0
-      if (reply.trim() && delivered && result.calls.every((c) => terminalTools.has(c.name ?? ''))) break
+      if (reply.trim() && (formShown || (delivered && result.calls.every((c) => terminalTools.has(c.name ?? ''))))) break
       if (last) break
       contents.push({ role: 'model', parts: result.parts }, { role: 'user', parts: responses })
     }

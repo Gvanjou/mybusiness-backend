@@ -4,7 +4,7 @@ import { gemini } from '../../pkg/gemini/gemini.js'
 import { db } from '../../pkg/supabase/supabase.js'
 import { logger, errorFields } from '../../shared/logger/logger.js'
 import { sleep } from '../../shared/utils/async.js'
-import { EMBEDDING_DIMENSIONS, KEY_ID, modelChains, thinkingByTask, type AiTask } from './ai.models.js'
+import { EMBEDDING_DIMENSIONS, KEY_ID, liteFirst, modelChains, thinkingByTask, type AiTask } from './ai.models.js'
 import { quota } from './ai.quota.js'
 
 export class AiUnavailableError extends Error {
@@ -97,9 +97,11 @@ async function withFallback<T>(task: AiTask, meta: CallMeta, call: (model: strin
   // Someone is waiting in the chat: a busy model is not retried, the next one is tried at once. Jobs can wait.
   const overloadRetries = meta.sessionId ? 0 : 3
   const ordered = meta.only ? [meta.only] : quota.order(chain, task)
-  const models = meta.prefer && ordered.includes(meta.prefer) ? [meta.prefer, ...ordered.filter((m) => m !== meta.prefer)] : ordered
+  let queue = meta.prefer && ordered.includes(meta.prefer) ? [meta.prefer, ...ordered.filter((m) => m !== meta.prefer)] : [...ordered]
   let timedOut = false
-  for (const model of models) {
+  while (queue.length) {
+    const model = queue[0]!
+    queue = queue.slice(1)
     if (meta.attempts && meta.attempts.left <= 0) break
     if (!(await quota.acquire(model, maxWaitMs, meta.sessionId ? 1 : JOB_QUOTA_SHARE))) continue
     for (let attempt = 0; ; attempt++) {
@@ -131,6 +133,8 @@ async function withFallback<T>(task: AiTask, meta: CallMeta, call: (model: strin
           // A second timeout means Google is slow for every model: stop instead of spending more allowance.
           if (timedOut) throw new AiUnavailableError(task)
           timedOut = true
+          // The quick models go next: under load they start answering long before another busy Flash model would.
+          queue = liteFirst(queue)
         }
         // A timeout already cost a lot of time: go to the next model instead of waiting again.
         if (!isOverloaded(err) || attempt >= overloadRetries) break

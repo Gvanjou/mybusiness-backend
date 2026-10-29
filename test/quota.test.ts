@@ -3,7 +3,7 @@ import { test } from 'node:test'
 import { ApiError } from '@google/genai'
 import { ai, AiUnavailableError } from '../src/modules/ai/ai.gateway.js'
 import { quota } from '../src/modules/ai/ai.quota.js'
-import { FREE_CHAT_MODELS, modelChains } from '../src/modules/ai/ai.models.js'
+import { FREE_CHAT_MODELS, MODEL_INFO, modelChains } from '../src/modules/ai/ai.models.js'
 import { gemini } from '../src/pkg/gemini/gemini.js'
 import { db } from '../src/pkg/supabase/supabase.js'
 
@@ -155,5 +155,29 @@ test('a model the client picked runs alone, however it did recently, and its fai
   } finally {
     gemini.models.generateContentStream = saved.stream
     db.from = saved.from
+  }
+})
+
+test('after a timeout the quick models are tried next: under load they answer long before another busy Flash model', async () => {
+  const tried: string[] = []
+  const saved = { stream: gemini.models.generateContentStream, from: db.from, acquire: quota.acquire }
+  quota.acquire = async () => true // the earlier tests left some of these models cooling off
+  gemini.models.generateContentStream = (async (p: { model: string }) => {
+    tried.push(p.model)
+    throw new DOMException('too slow', 'TimeoutError')
+  }) as typeof gemini.models.generateContentStream
+  db.from = (() => ({ insert: async () => ({ error: null }) })) as unknown as typeof db.from // no usage rows from a test
+  try {
+    const chain = ['gemini-3.8-flash', 'gemini-3.7-flash', 'gemini-3.5-flash-lite', 'gemini-3.1-flash-lite']
+    const step = ai.agentStep({ system: 's', contents: [{ role: 'user', parts: [{ text: 'hi' }] }], tools: [], sessionId: 'test', chain })
+    await assert.rejects(async () => {
+      for await (const _ of step) void _
+    }, AiUnavailableError)
+    assert.equal(tried.length, 2, 'a second timeout stops')
+    assert.equal(MODEL_INFO[tried[1]!]?.tier, 'lite', `after a timeout: ${tried.join(' → ')}`)
+  } finally {
+    gemini.models.generateContentStream = saved.stream
+    db.from = saved.from
+    quota.acquire = saved.acquire
   }
 })

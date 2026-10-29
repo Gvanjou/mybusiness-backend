@@ -145,4 +145,15 @@ test('the briefs: the question decides the answer, an opinion is always given, a
     assert.match(brief, /never a reason not to answer/)
   }
   assert.match(agentSystem('ka', {}), /never after a general question, never as a default start/i)
+  assert.doesNotMatch(agentSystem('ka', {}), /"OK,/, 'no casual opener to copy')
+  assert.match(agentSystem('ka', {}), /ამ ეტაპზე არ გირჩევთ/)
+})
+
+test('a rent the business cannot carry is flagged on its fact sheet', () => {
+  const costly = make(11, { price: 78000, description: 'მოქმედი ბიზნესი, ქირა 8000 ლარი თვეში' })
+  const s = { ...snapshot, listings: [...listings, costly], byId: new Map([...listings, costly].map((l) => [l.id, l])) } as unknown as CatalogSnapshot
+  const sheet = factSheet(costly, s, sessionStateSchema.parse({ refs: [costly.id] }), 'ka') as Record<string, string>
+  assert.match(sheet.check ?? '', /წლის ქირა ფასზე მეტია/, JSON.stringify(sheet))
+  const fine = factSheet(listings[0]!, snapshot, sessionStateSchema.parse({ refs: ids }), 'ka') as Record<string, string>
+  assert.doesNotMatch(fine.check ?? '', /ქირა/, 'an ordinary rent is not flagged')
 })

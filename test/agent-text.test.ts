@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { createRepeatCheck, createTextFilter } from '../src/modules/chat/agent/agent.text.js'
+import { createRepeatCheck, createTextFilter, withoutTables } from '../src/modules/chat/agent/agent.text.js'
 
 // The model's text goes out as it arrives, except a hidden options block, which becomes chips.
 
@@ -35,4 +35,10 @@ test('a long opening with no sentence end passes through whole: no word is ever 
   const out = check.push(`${before.slice(0, -1)} ${before.slice(0, -1)} ${before.slice(0, -1)} ${before.slice(0, -1)} ${before.slice(0, -1)}, გან`) + check.push('ცხადებაში ქირა 450 ლარია.') + check.end()
   assert.ok(out.includes('განცხადებაში ქირა'), out)
   assert.ok(!out.startsWith('ცხადებაში'))
+})
+
+test('a table the model wrote goes with the line that introduced it, so no heading is left empty', () => {
+  const text = 'რეკომენდაცია: #1.\n\n**შემაჯამებელი შეფასება:**\n\n| | #1 | #2 |\n|---|---|---|\n| რისკი | დაბალი | მაღალი |\n\n**პირველ რიგში გადაამოწმეთ:** რჩებიან თუ არა კონდიტრები.'
+  assert.equal(withoutTables(text), 'რეკომენდაცია: #1.\n\n**პირველ რიგში გადაამოწმეთ:** რჩებიან თუ არა კონდიტრები.')
+  assert.equal(withoutTables('**შეჯამება:**\nპირველი უკეთესია.'), '**შეჯამება:**\nპირველი უკეთესია.', 'a heading with text under it stays')
 })

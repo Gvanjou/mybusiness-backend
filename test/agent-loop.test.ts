@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { after, before, test } from 'node:test'
+import { after, before, mock, test } from 'node:test'
 import { ai, AiUnavailableError } from '../src/modules/ai/ai.gateway.js'
 import { agentTurn } from '../src/modules/chat/agent/agent.service.js'
 import type { AppError } from '../src/shared/http/app-error.js'
@@ -50,10 +50,8 @@ async function run(text: string, model?: string, opts: { profile?: Session['prof
   return { events, tokens, of: (name: string) => events.filter((e) => e.event === name).map((e) => e.data) }
 }
 
-test('tool calls run, their results reach the next step, and the form/profile events go out', async () => {
-  const seen: Step[] = []
-  script = async function* (params, n) {
-    seen.push(params)
+test('a reply that shows the form ends there, even when the same step saved a fact: one introduction, not two', async () => {
+  script = async function* (_params, n) {
     if (n === 1) {
       yield { type: 'text', text: 'ჯერ რამდენიმე კითხვა.' }
       const c1 = { name: 'update_profile', args: { budget_gel: 50000, involvement: 'part_time' } }
@@ -61,12 +59,12 @@ test('tool calls run, their results reach the next step, and the form/profile ev
       yield { type: 'done', model: 'stub', parts: [{ text: 'ჯერ რამდენიმე კითხვა.' }, { functionCall: c1 }, { functionCall: c2 }], calls: [c1, c2] }
       return
     }
-    yield { type: 'text', text: 'შეავსეთ და გავაგრძელოთ.' }
-    yield { type: 'done', model: 'stub', parts: [{ text: 'შეავსეთ და გავაგრძელოთ.' }], calls: [] }
+    yield { type: 'text', text: 'გთხოვთ, მიუთითოთ რა ტიპის ბიზნესი გაინტერესებთ.' }
+    yield { type: 'done', model: 'stub', parts: [{ text: 'გთხოვთ, მიუთითოთ რა ტიპის ბიზნესი გაინტერესებთ.' }], calls: [] }
   }
   const r = await run('მინდა ბიზნესის ყიდვა, არ ვიცი რომელი')
-  assert.equal(calls, 2, 'a step with a non-terminal tool continues; the text-only step ends it')
-  assert.equal(r.tokens, 'ჯერ რამდენიმე კითხვა.\n\nშეავსეთ და გავაგრძელოთ.')
+  assert.equal(calls, 1, 'no second step: it would only introduce the same form again')
+  assert.equal(r.tokens, 'ჯერ რამდენიმე კითხვა.')
   const form = r.of('form')[0] as { questions: { field: string; selected?: string }[]; submitLabel: string }
   assert.deepEqual(form.questions.map((q) => q.field), ['budget', 'goal', 'involvement', 'location', 'sector'], 'always the standard form')
   assert.deepEqual(form.questions.map((q) => q.selected), ['80000', undefined, 'part_time', undefined, undefined], 'what the client said is pre-selected')
@@ -74,14 +72,66 @@ test('tool calls run, their results reach the next step, and the form/profile ev
   assert.ok(profile.items.some((i) => i.key === 'budgetGel' && i.value.includes('50')), 'update_profile applied the budget')
   assert.ok(profile.items.some((i) => i.key === 'involvement'))
   assert.equal(r.events.at(-1)?.event, 'done')
+})
+
+test('tool calls run, and their results reach the next step', async () => {
+  const seen: Step[] = []
+  script = async function* (params, n) {
+    seen.push(params)
+    if (n === 1) {
+      yield { type: 'text', text: 'ბიუჯეტს დავიმახსოვრებ.' }
+      const c1 = { name: 'update_profile', args: { budget_gel: 50000, involvement: 'part_time' } }
+      yield { type: 'done', model: 'stub', parts: [{ text: 'ბიუჯეტს დავიმახსოვრებ.' }, { functionCall: c1 }], calls: [c1] }
+      return
+    }
+    yield { type: 'text', text: 'რა ტიპის ბიზნესი გაინტერესებთ?' }
+    yield { type: 'done', model: 'stub', parts: [{ text: 'რა ტიპის ბიზნესი გაინტერესებთ?' }], calls: [] }
+  }
+  await run('50 ათასი მაქვს, ნახევარ განაკვეთზე ვიმუშავებ')
+  assert.equal(calls, 2, 'a step with a non-terminal tool continues; the text-only step ends it')
   // The second step received the model's own parts and one function response per call, in order.
   const step2 = seen[1]!.contents
-  const modelTurn = step2.at(-2)!
-  const toolTurn = step2.at(-1)!
-  assert.equal(modelTurn.role, 'model')
-  assert.equal(toolTurn.role, 'user')
-  assert.deepEqual((toolTurn.parts ?? []).map((p) => p.functionResponse?.name), ['update_profile', 'show_form'])
+  assert.equal(step2.at(-2)!.role, 'model')
+  assert.equal(step2.at(-1)!.role, 'user')
+  assert.deepEqual((step2.at(-1)!.parts ?? []).map((p) => p.functionResponse?.name), ['update_profile'])
   assert.equal(seen[1]!.tools.length > 0, true, 'tools are still offered on the second step')
+})
+
+test('out of time after the tools ran: one last short step writes the answer instead of "try again"', async () => {
+  mock.timers.enable({ apis: ['Date'], now: Date.now() })
+  try {
+    const seen: Step[] = []
+    script = async function* (params, n) {
+      seen.push(params)
+      if (n === 1) {
+        const c = { name: 'update_profile', args: { budget_gel: 50000 } }
+        mock.timers.tick(60_000) // the first step and its tools used the whole budget
+        yield { type: 'done', model: 'stub', parts: [{ functionCall: c }], calls: [c] }
+        return
+      }
+      yield { type: 'text', text: 'ბიუჯეტი 50 000 ₾-ია.' }
+      yield { type: 'done', model: 'stub', parts: [{ text: 'ბიუჯეტი 50 000 ₾-ია.' }], calls: [] }
+    }
+    const r = await run('50 ათასი მაქვს')
+    assert.equal(calls, 2)
+    assert.equal(r.tokens, 'ბიუჯეტი 50 000 ₾-ია.')
+    assert.equal(seen[1]!.tools.length, 0, 'the last step only writes')
+    assert.equal(r.of('error').length, 0)
+  } finally {
+    mock.timers.reset()
+  }
+})
+
+test('a kind of business and a city named in a statement are remembered even when the model saves neither', async () => {
+  script = async function* () {
+    yield { type: 'text', text: 'ბათუმში კაფეებს გაჩვენებთ.' }
+    yield { type: 'done', model: 'stub', parts: [{ text: 'ბათუმში კაფეებს გაჩვენებთ.' }], calls: [] }
+  }
+  const keys = async (text: string) => ((await run(text)).of('profile')[0] as { items: { key: string }[] }).items.map((i) => i.key)
+  const said = await keys('კაფე მინდა ბათუმში, 200 ათასამდე')
+  assert.ok(said.includes('sectors') && said.includes('cities') && said.includes('budgetGel'), said.join())
+  const asked = await keys('რა ღირს კაფე თბილისში?')
+  assert.ok(!asked.includes('sectors') && !asked.includes('cities'), 'a question only mentions them')
 })
 
 test('chips with text end the turn after one step', async () => {

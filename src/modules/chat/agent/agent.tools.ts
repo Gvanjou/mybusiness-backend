@@ -1,5 +1,5 @@
 import { Type, type FunctionDeclaration } from '@google/genai'
-import { formatGel, pick, type Locale } from '../../../shared/i18n/locale.js'
+import { formatGel, pick, type Locale, type Localized } from '../../../shared/i18n/locale.js'
 import { categoriesNamed, knownCategoryKeys, normalizeCity } from '../../catalog/catalog.labels.js'
 import type { CatalogListing } from '../../catalog/catalog.model.js'
 import { areaOf, catalog, type CatalogSnapshot } from '../../catalog/catalog.service.js'
@@ -389,8 +389,11 @@ const executors: Record<string, Executor> = {
     ctx.state.contextListingId = undefined
     if (top.length === 0) {
       const options = relaxations(ctx.s, p, { track, strictSectors: categories.length > 0 }, result.pool.length)
-      return { matches: 0, ways_to_widen: options.map((o) => ({ option: o.kind, extra_listings: o.extra })), note: 'Nothing matches all criteria right now. Say so plainly, then offer the nearest alternatives: these ways to widen (another city, a related kind of business, a higher budget), with how many listings each adds. The app cannot notify anyone: never offer to tell the client later.' }
+      // The ways to widen, as buttons under the answer (the model's own buttons replace them).
+      ctx.out.quickReplies = options.slice(0, 3).map((o, i) => ({ kind: 'message', id: `relax:${i}`, label: `${pick(RELAX[o.kind], ctx.locale)} (+${o.extra})`, text: pick(RELAX[o.kind], ctx.locale) }))
+      return { matches: 0, ways_to_widen: options.map((o) => ({ option: o.kind, extra_listings: o.extra })), note: 'Nothing matches all criteria right now. Say so plainly, then offer the nearest alternatives: these ways to widen (another city, a related kind of business, a higher budget), with how many listings each adds. They are buttons under your answer: end with one short question about which. The app cannot notify anyone: never offer to tell the client later.' }
     }
+    ctx.out.quickReplies = ctx.out.quickReplies.filter((q) => !q.id.startsWith('relax:'))
     return {
       matches: result.ranked.length + (result.wildcard ? 1 : 0),
       data_source: `live from mybusiness.ge (${ctx.s.loadedAt.toISOString().slice(11, 16)} UTC)`,
@@ -586,7 +589,7 @@ const executors: Record<string, Executor> = {
       other: Math.round(given.other ?? typical.other),
     }
     const typicalLines = new Set([...(given.staff === null && typical.staff ? ['staff'] : []), ...(given.owner === null && typical.manager ? ['owner_salary'] : []), ...(given.utilities === null && typical.utilities ? ['utilities'] : []), ...(given.other === null && typical.other ? ['other'] : [])])
-    const layout = { typical: typicalLines, manager: given.owner === null && typical.manager > 0, ownerWorks: business && !fixedCosts.owner_salary, rentUnknown: business && !fixedCosts.rent && listing?.insights?.premises.tenure !== 'owned' }
+    const layout = { typical: typicalLines, manager: given.owner === null && typical.manager > 0, ownSalary: given.owner !== null && given.owner > 0, ownerWorks: business && !fixedCosts.owner_salary, rentUnknown: business && !fixedCosts.rent && listing?.insights?.premises.tenure !== 'owned' }
     const fixedTotal = Object.values(fixedCosts).reduce((a, b) => a + b, 0)
     const total = price + extra
     const names = ['cautious', 'realistic', 'optimistic'] as const
@@ -605,10 +608,12 @@ const executors: Record<string, Executor> = {
     if (!fixedCosts.staff && !fixedCosts.owner_salary) warnings.push('No staff or owner salary in the costs: the profit only holds if the owner works for free — say so, or recompute with staff.')
     if (typicalLines.size) warnings.push(`Usual figures were used for ${[...typicalLines].join(', ')} (the table marks them): say they are assumptions, and ask the seller for the real costs.`)
     if (layout.ownerWorks) warnings.push("No owner or manager salary: the profit includes the buyer's own work — say so.")
+    if (layout.ownSalary) warnings.push("The buyer's own salary is counted as a cost: say so in one line; the table also shows what they take home (profit + salary).")
+    if (extra) warnings.push(`The payback is counted on the price plus ${extra} ₾ of extra costs (the table shows both): say so.`)
     if (layout.rentUnknown) warnings.push('The rent is not known and not in the costs: say the profit is before rent until the seller states it.')
     if (!cogsPct) warnings.push('No cost of goods given: profit is overstated for any business that sells goods or food.')
     else if (cogsGiven === null) warnings.push(`No cost of goods given: the usual ${cogsPct}% for this type was used — say it is an assumption.`)
-    ctx.out.compare = profitTable(scenarios, fixedCosts, cogsPct, taxPct, total, ctx.locale, { ...layout, cogsTypical: cogsGiven === null && cogsPct > 0 })
+    ctx.out.compare = profitTable(scenarios, fixedCosts, cogsPct, taxPct, { price, extra, total }, ctx.locale, { ...layout, cogsTypical: cogsGiven === null && cogsPct > 0 })
     if (listing) markTopic(ctx.state, listing.id, 'profit')
     return {
       listing: listing && sheet(ctx, listing),
@@ -751,6 +756,14 @@ const executors: Record<string, Executor> = {
 
 const MAX_COMPARE = 4
 
+// One-tap ways to widen a search that found nothing, in the client's words.
+const RELAX: Record<'budget_up' | 'any_city' | 'include_property' | 'any_sector', Localized> = {
+  budget_up: { ka: 'ბიუჯეტი ოდნავ გავზარდოთ', en: 'Raise the budget a little', ru: 'Немного поднять бюджет' },
+  any_city: { ka: 'სხვა ქალაქებშიც მოძებნე', en: 'Search other cities too', ru: 'Искать и в других городах' },
+  include_property: { ka: 'კომერციული ფართებიც მაჩვენე', en: 'Show commercial spaces too', ru: 'Показать и коммерческие помещения' },
+  any_sector: { ka: 'მსგავსი ბიზნესებიც მაჩვენე', en: 'Show similar businesses too', ru: 'Показать и похожие бизнесы' },
+}
+
 // The message to the seller when the model talked about it but never produced one: the analysis' own draft (the
 // listing's open questions), so the buyer always gets the card with Copy and Open listing.
 export function fallbackHandoff(ctx: ToolContext, l: CatalogListing): void {
@@ -783,8 +796,9 @@ export function budgetPatch(money: { gel: number; amount: number; currency: stri
   return money.currency === 'GEL' ? { budgetGel: money.gel } : { budgetGel: money.gel, budgetOriginal: { amount: money.amount, currency: money.currency } }
 }
 
-// Months to pay back, as shown: one decimal under ten months ("5.5"), whole months from there; never below 0.1.
-export const paybackMonths = (exact: number) => (exact < 10 ? Math.max(0.1, Math.round(exact * 10) / 10) : Math.round(exact))
+// Months to pay back, as shown: whole months, and one decimal only under six, where the "unusually fast" line is
+// (rounded down there, so a flagged payback never reads "6"); never below 0.1.
+export const paybackMonths = (exact: number) => (exact < 6 ? Math.max(0.1, Math.floor(exact * 10) / 10) : Math.round(exact))
 
 // The three profit scenarios as a table under the answer: the same cost lines in every column.
 function profitTable(
@@ -792,9 +806,9 @@ function profitTable(
   fixed: Record<string, number>,
   cogsPct: number,
   taxPct: number,
-  total: number,
+  investment: { price: number; extra: number; total: number },
   locale: Locale,
-  layout: { cogsTypical: boolean; typical: Set<string>; manager: boolean; ownerWorks: boolean; rentUnknown: boolean },
+  layout: { cogsTypical: boolean; typical: Set<string>; manager: boolean; ownSalary: boolean; ownerWorks: boolean; rentUnknown: boolean },
 ): CompareTable {
   const t = (ka: string, en: string, ru: string) => pick({ ka, en, ru }, locale)
   const gel = (x: number) => formatGel(x, locale)
@@ -817,13 +831,17 @@ function profitTable(
       ...fixedRow('staff', t('პერსონალი', 'Staff', 'Персонал')),
       ...(layout.ownerWorks
         ? absentRow('owner_salary', t('მფლობელის ხელფასი (თქვენი შრომა, არ ითვლება)', 'Owner salary (your own work, not counted)', 'Зарплата владельца (ваш труд, не учтён)'))
-        : fixedRow('owner_salary', layout.manager ? t('მენეჯერის ხელფასი', 'Manager salary', 'Зарплата управляющего') : t('მფლობელის ხელფასი', 'Owner salary', 'Зарплата владельца'))),
+        : fixedRow('owner_salary', layout.manager ? t('მენეჯერის ხელფასი', 'Manager salary', 'Зарплата управляющего') : layout.ownSalary ? t('თქვენი ხელფასი (თქვენი შრომა)', 'Your salary (your own work)', 'Ваша зарплата (ваш труд)') : t('მფლობელის ხელფასი', 'Owner salary', 'Зарплата владельца'))),
       ...fixedRow('utilities', t('კომუნალურები', 'Utilities', 'Коммунальные')),
       ...fixedRow('other', t('სხვა ხარჯები', 'Other costs', 'Прочие расходы')),
       { key: 'tax', label: t(`გადასახადი (${taxPct}%)`, `Tax (${taxPct}%)`, `Налог (${taxPct}%)`), values: scenarios.map((s) => `−${gel(s.tax_gel)}`) },
       { key: 'profit', label: t('წმინდა მოგება', 'Net profit', 'Чистая прибыль'), values: scenarios.map((s) => gel(s.net_profit_monthly_gel)) },
+      // A buyer who works there is paid the salary above as well: what they take home is both.
+      ...(layout.ownSalary ? [{ key: 'take_home', label: t('თქვენ ხელზე (მოგება + თქვენი ხელფასი)', 'You take home (profit + your salary)', 'Вам на руки (прибыль + ваша зарплата)'), values: scenarios.map((s) => gel(s.net_profit_monthly_gel + (fixed.owner_salary ?? 0))) }] : []),
+      // What the payback is counted on, when it is more than the price.
+      ...(investment.extra ? [{ key: 'investment', label: t('ინვესტიცია (ფასი + დამატებითი ხარჯი)', 'Investment (price + extra costs)', 'Вложения (цена + доп. расходы)'), values: scenarios.map(() => `${gel(investment.price)} + ${gel(investment.extra)}`) }] : []),
       // Under 6 months is unusually fast for a business: said in the table itself, so no answer can skip it.
-      { key: 'payback', label: t(`ანაზღაურება (${gel(total)})`, `Payback (${gel(total)})`, `Окупаемость (${gel(total)})`), values: scenarios.map((s) => (s.payback_months === null ? '—' : `${decimal(s.payback_months, locale)} ${months}${s.payback_fast ? ` — ${fast}` : ''}`)) },
+      { key: 'payback', label: t(`ანაზღაურება (${gel(investment.total)})`, `Payback (${gel(investment.total)})`, `Окупаемость (${gel(investment.total)})`), values: scenarios.map((s) => (s.payback_months === null ? '—' : `${decimal(s.payback_months, locale)} ${months}${s.payback_fast ? ` — ${fast}` : ''}`)) },
     ],
   }
 }

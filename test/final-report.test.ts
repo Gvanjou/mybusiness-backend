@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import type { CatalogListing } from '../src/modules/catalog/catalog.model.js'
+import { citiesNamed } from '../src/modules/catalog/catalog.labels.js'
 import { areaOf } from '../src/modules/catalog/catalog.service.js'
 import { fixScript } from '../src/modules/chat/agent/agent.text.js'
 import { detectLanguage } from '../src/modules/chat/router/router.rules.js'
@@ -29,4 +30,11 @@ test('Georgian typed on a Latin keyboard is not English: the conversation keeps 
   assert.equal(detectLanguage('how much is the cafe in Batumi?', 'ka'), 'en')
   assert.equal(detectLanguage('сколько стоит кафе?', 'ka'), 'ru')
   assert.equal(detectLanguage('მინდა კაფე', 'en'), 'ka')
+})
+
+test('cities named in a message, with their endings, in three languages; a short name never matches a street', () => {
+  assert.deepEqual(citiesNamed('ავტოსამრეცხაო მინდა ბათუმში'), ['Batumi'])
+  assert.deepEqual(citiesNamed('кафе в Тбилиси'), ['Tbilisi'])
+  assert.deepEqual(citiesNamed('a café in Batumi'), ['Batumi'])
+  assert.deepEqual(citiesNamed('გორგასლის ქუჩაზე'), [])
 })

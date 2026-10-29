@@ -34,6 +34,11 @@ export const MODEL_INFO: Record<string, { name: string; tier: 'flash' | 'lite' }
   'gemini-3.1-flash-lite-preview': { name: 'Gemini 3.1 Flash-Lite (preview)', tier: 'lite' },
 }
 
+// The quick models first, the rest after, each group in its own order: what to try once Google is slow.
+export function liteFirst(models: readonly string[]): string[] {
+  return [...models.filter((m) => MODEL_INFO[m]?.tier === 'lite'), ...models.filter((m) => MODEL_INFO[m]?.tier !== 'lite')]
+}
+
 export const modelChains: Record<AiTask, readonly string[]> = {
   responder: env.GEMINI_RESPONDER_MODELS.length ? env.GEMINI_RESPONDER_MODELS : FREE_CHAT_MODELS,
   // Google Search / Maps grounding: the same pool, fastest first (the answer is only facts for the responder).

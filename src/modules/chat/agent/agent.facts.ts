@@ -192,12 +192,16 @@ const W = {
   competitors: t('{n} პირდაპირი კონკურენტი {r} მ-ში ({n150} — 150 მ-ში){nearest}', '{n} direct competitors within {r} m ({n150} within 150 m){nearest}', '{n} прямых конкурентов в радиусе {r} м ({n150} — в 150 м){nearest}'),
   nearest: t('; უახლოესი: {list}', '; nearest: {list}', '; ближайшие: {list}'),
   staffForArea: t('{n} თანამშრომელი {a} მ²-ზე — დაუჯერებლად ბევრია, გადაამოწმეთ', '{n} staff for {a} m² — implausibly many, verify', '{n} сотрудников на {a} м² — неправдоподобно много, проверьте'),
+  rentVsPrice: t('ქირა {r} ₾/თვე — წლის ქირა ფასზე მეტია, ძალიან მაღალი ხარჯია', 'rent {r} ₾/month — a year of rent is more than the price, a very high cost', 'аренда {r} ₾/мес. — за год больше цены, очень высокая нагрузка'),
   fastPayback: t('ნათქვამი მოგებით ფასი {m} თვეში ანაზღაურდება — უჩვეულოდ სწრაფია, გადაამოწმეთ', 'at the stated profit the price pays back in {m} months — unusually fast, verify', 'при заявленной прибыли цена окупается за {m} мес. — подозрительно быстро, проверьте'),
 }
 
 // Seller claims that don't add up (round 6: "30 employees" in a 24 m² café went unchallenged): named on the fact
-// sheet and the card, so the answer and the seller message question them. Under 2 m² a person, or a stated profit
-// that would repay the price within 6 months.
+// sheet and the card, so the answer and the seller message question them. Under 2 m² a person, a stated profit that
+// would repay the price within 6 months, or a rent the business cannot carry.
+// Rent in these is income, not a cost of the business.
+const PROPERTY_KINDS = ['real_estate', 'commercial_space', 'offices', 'warehouse', 'land']
+
 function doubtsOf(l: CatalogListing, s: CatalogSnapshot, locale: Locale, area: number | null): string[] {
   const i = l.insights
   const out: string[] = []
@@ -206,8 +210,11 @@ function doubtsOf(l: CatalogListing, s: CatalogSnapshot, locale: Locale, area: n
   const profit = i?.financials.profit_monthly ? monthlyGel(i.financials.profit_monthly, s.rates) : null
   if (profit && profit[1] > 0 && l.priceGel) {
     const months = l.priceGel / profit[1]
-    if (months < 6) out.push(say(W.fastPayback, locale, { m: decimal(Math.max(0.1, Math.round(months * 10) / 10), locale) }))
+    if (months < 6) out.push(say(W.fastPayback, locale, { m: decimal(Math.max(0.1, Math.floor(months * 10) / 10), locale) }))
   }
+  // A year's rent above the price: the premises alone cost more than the business, so it must turn over a lot.
+  const rent = i?.premises.rent_monthly && !PROPERTY_KINDS.includes(l.category) ? monthlyGel(i.premises.rent_monthly, s.rates) : null
+  if (rent && rent[0] > 0 && l.priceGel && rent[0] * 12 >= l.priceGel) out.push(say(W.rentVsPrice, locale, { r: num(approx(rent[0]), locale) }))
   return out
 }
 

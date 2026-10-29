@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { applyFormAnswers, emptyOutput, runTool, type ToolContext } from '../src/modules/chat/agent/agent.tools.js'
+import { applyFormAnswers, emptyOutput, paybackMonths, runTool, type ToolContext } from '../src/modules/chat/agent/agent.tools.js'
 import { standardForm } from '../src/modules/chat/agent/agent.fallback.js'
 import { sessionStateSchema } from '../src/modules/chat/chat.model.js'
 import type { CompareTable } from '../src/modules/chat/agent/agent.facts.js'
@@ -207,4 +207,42 @@ test('seller_message and visit_checklist go on screen for the right listing', as
     await runTool('visit_checklist', { ref: '#1', items: ['ნახეთ სალარო', 'შეამოწმეთ აღჭურვილობა', 'დაითვალეთ მომხმარებლები'] }, { ...v, state: c.state })
     assert.equal(v.out.checklist?.items.length, 3)
   })
+})
+
+test('payback in whole months, with one decimal only under six, where the "unusually fast" line is', () => {
+  assert.equal(paybackMonths(9.3), 9)
+  assert.equal(paybackMonths(5.5), 5.5)
+  assert.equal(paybackMonths(5.96), 5.9, 'a flagged payback never reads "6"')
+})
+
+test('profit_scenarios: a buyer who works there sees their salary as a cost and what they take home; the investment behind the payback is shown', async () => {
+  const c = ctx()
+  await runTool('profit_scenarios', { price_gel: 96000, extra_investment_gel: 5000, revenue_monthly_gel: [12000, 16000, 20000], cost_of_goods_pct: 35, rent_monthly_gel: 2000, staff_monthly_gel: 3000, owner_salary_monthly_gel: 2000, utilities_monthly_gel: 500, other_monthly_gel: 400 }, c)
+  const rows = (c.out.compare as CompareTable).rows
+  const row = (key: string) => rows.find((r) => r.key === key)!
+  assert.match(row('owner_salary').label, /თქვენი ხელფასი/)
+  const profit = row('profit').values.map((v) => Number(v.replace(/[^\d-−]/g, '').replace('−', '-')))
+  const home = row('take_home').values.map((v) => Number(v.replace(/[^\d-−]/g, '').replace('−', '-')))
+  assert.deepEqual(home, profit.map((p) => p + 2000), 'take home = profit + the salary counted above')
+  assert.match(row('investment').values[0]!, /96\s000 ₾ \+ 5\s000 ₾/)
+  assert.match(row('payback').label, /101\s000/)
+})
+
+test('a search that finds nothing offers the ways to widen it as buttons', async () => {
+  const { catalog, toListing } = await import('../src/modules/catalog/catalog.service.js')
+  const rates = { GEL: 1, USD: 2.6, EUR: 2.9 }
+  const listings = [toListing({ id: '11111111-0000-4000-8000-000000000001', title: 'კაფე ვაკეში', category: 'restaurants', deal_type: 'sale', price: 50000, currency: 'GEL', city: 'Tbilisi', description: 'მოქმედი კაფე' }, rates)]
+  const s = { cities: ['Tbilisi', 'Batumi'], categories: ['restaurants'], rates, listings, byId: new Map(listings.map((l) => [l.id, l])), byShortId: new Map(listings.map((l) => [l.shortId, l])), stats: new Map(), loadedAt: new Date() } as unknown as ToolContext['s']
+  const saved = { get: catalog.get, details: catalog.withDetails }
+  catalog.get = async () => s
+  catalog.withDetails = async (x) => x
+  try {
+    const c = { ...ctx(), s }
+    const r = (await runTool('search_listings', { categories: ['restaurants'], cities: ['Batumi'] }, c)) as { matches: number }
+    assert.equal(r.matches, 0)
+    assert.deepEqual(c.out.quickReplies.map((q) => q.label), ['სხვა ქალაქებშიც მოძებნე (+1)'])
+  } finally {
+    catalog.get = saved.get
+    catalog.withDetails = saved.details
+  }
 })

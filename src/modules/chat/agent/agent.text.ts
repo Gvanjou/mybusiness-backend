@@ -106,15 +106,30 @@ export function profileArgsIn(blocks: HiddenBlock[]): Record<string, unknown> | 
 }
 
 // Markdown tables the model writes despite the rules ("| შემოსავალი | 20 000 |"): the app shows its own computed
-// tables, so a second set of numbers never reaches the buyer.
+// tables, so a second set of numbers never reaches the buyer. The line that introduced one ("**შეჯამება:**") goes with
+// it, so no heading is left with nothing under it.
 export function withoutTables(text: string): string {
-  return text
-    .split('\n')
-    .filter((line) => !/^\s*\|.*\|\s*$/.test(line))
-    .join('\n')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim()
+  const out: string[] = []
+  let inTable = false
+  for (const line of text.split('\n')) {
+    if (TABLE_ROW.test(line)) {
+      if (!inTable) {
+        let j = out.length - 1
+        while (j >= 0 && !out[j]!.trim()) j--
+        if (j >= 0 && INTRO.test(out[j]!)) out.splice(j)
+      }
+      inTable = true
+      continue
+    }
+    inTable = false
+    out.push(line)
+  }
+  return out.join('\n').replace(/\n{3,}/g, '\n\n').trim()
 }
+
+const TABLE_ROW = /^\s*\|.*\|\s*$/
+// A short line that only introduces what follows: "**შეჯამება:**", "### შედარება:", "ქვემოთ ცხრილია:".
+const INTRO = /^\s*(?:#{1,4}\s*)?(?:\*\*)?[^|\n]{1,80}?:\s*(?:\*\*)?\s*$/
 
 // The first sentence (or the part before " — ") of a later step, held until it is complete and dropped when it only
 // repeats the text before it: at least three words, nearly all already said. A bold name or a "#n" is never dropped.

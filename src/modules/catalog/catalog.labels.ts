@@ -169,6 +169,20 @@ export function categoriesNamed(text: string): string[] {
   return stems.filter(([, ss]) => ss.some((s) => new RegExp(`(?<!\\p{L})${s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`, 'u').test(t))).map(([key]) => key)
 }
 
+// Cities named in a message ("ბათუმში", "в Тбилиси", "in Batumi"), by the stem of each name in every language, matched
+// at the start of a word so endings still match. Stems under four letters are left out ("გორ" would match "გორგასლის").
+const cityStems: [string, string[]][] = Object.entries(cities).map(([en, names]) => [
+  en,
+  Object.values(names)
+    .map((x) => plain(x.toLowerCase().replace(/[აეიოუaeiouyаеиоуыяю]+$/u, '')))
+    .filter((x) => x.length >= 4),
+])
+
+export function citiesNamed(text: string): string[] {
+  const t = plain(text.toLowerCase())
+  return cityStems.filter(([, ss]) => ss.some((s) => new RegExp(`(?<!\\p{L})${s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`, 'u').test(t))).map(([en]) => en)
+}
+
 export function cityLabel(city: string | null, locale: Locale): string {
   if (!city) return ''
   return cities[city]?.[locale] ?? city

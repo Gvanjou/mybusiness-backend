@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { clickedKey, mergeChips, nextSteps, offeredFrom, topicsOf } from '../src/modules/chat/agent/agent.next.js'
+import { answerChips, clickedKey, mergeChips, nextSteps, offeredFrom, topicsOf, yesNoChips } from '../src/modules/chat/agent/agent.next.js'
 import { emptyOutput, type ToolContext } from '../src/modules/chat/agent/agent.tools.js'
 import { sessionStateSchema } from '../src/modules/chat/chat.model.js'
 import type { CatalogListing } from '../src/modules/catalog/catalog.model.js'
@@ -87,4 +87,12 @@ test('the chip just tapped is not offered again; answers come first (three at mo
   assert.equal(merged.filter((c) => c.id.startsWith('ai:')).length, 3)
   assert.ok(merged.slice(0, 3).every((c) => c.id.startsWith('ai:')))
   assert.ok(merged.length <= 5)
+})
+
+test('asking for a recommendation counts as "which is better"; "any other questions?" gets no buttons', () => {
+  assert.ok(topicsOf('შენ რას მირჩევდი, რომელში არის უფრო ნაკლები რისკი და კონკურენცია?').includes('best'))
+  assert.ok(topicsOf('What would you recommend?').includes('best'))
+  assert.deepEqual(answerChips('გაქვთ თუ არა სხვა შეკითხვები?', 'ka'), [])
+  assert.deepEqual(yesNoChips('Do you have any other questions?', 'en'), [])
+  assert.equal(answerChips('გავაკეთო #2-ის მოგების გათვლა?', 'ka').length, 2, 'a real offer still gets yes and no')
 })
