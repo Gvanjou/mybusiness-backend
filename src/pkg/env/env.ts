@@ -61,7 +61,7 @@ const envSchema = z.object({
     .default('false')
     .transform((v) => v === 'true'),
   GEMINI_LIVE_MODEL: z.string().min(1).default('gemini-3.8-live'),
-  GEMINI_LIVE_VOICE: z.string().min(1).default('Kore'),
+  GEMINI_LIVE_VOICE: z.string().min(1).default('Charon'), // a man's voice: the drawn consultant is one
   VOICE_MINUTES_PER_DAY: z.coerce.number().int().positive().default(60),
   CHAT_MESSAGES_PER_MINUTE: z.coerce.number().int().positive().default(10),
   CHAT_MESSAGES_PER_DAY: z.coerce.number().int().positive().default(200),

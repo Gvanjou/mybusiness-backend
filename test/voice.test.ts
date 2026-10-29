@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { after, before, test } from 'node:test'
+import { after, before, mock, test } from 'node:test'
 import { Behavior, type FunctionDeclaration, type LiveConnectConfig } from '@google/genai'
 import { catalog, toListing, type CatalogSnapshot } from '../src/modules/catalog/catalog.service.js'
 import { ai } from '../src/modules/ai/ai.gateway.js'
@@ -74,7 +74,13 @@ test("the call follows the language the client sees, not the chat's stored one: 
   assert.equal(live.realtimeInputConfig?.automaticActivityDetection?.startOfSpeechSensitivity, 'START_SENSITIVITY_LOW')
   messages.length = 0
   await callTool(s, 'get_listing', { ref: '#1' })
-  await saveTurn({ ...s, profile: { budgetGel: { value: 30000, status: 'known', turn: 1 } } }, 'кафе', 'Один вариант на экране.', true)
+  await saveTurn(s, 'кафе', 'Один вариант на экране.')
+  mock.timers.enable({ apis: ['Date'], now: Date.now() + 200_000 }) // a long conversation gets its summary
+  try {
+    await saveTurn({ ...s, profile: { budgetGel: { value: 30000, status: 'known', turn: 1 } } }, 'спасибо', 'Удачи.', true)
+  } finally {
+    mock.timers.reset()
+  }
   const payload = messages.at(-1)!.payload as { callSummary: { facts: string[] } }
   assert.match(payload.callSummary.facts[0]!, /^≤ 30\s000 ₾$/, 'facts in the call language (no Georgian label on the budget)')
 })
@@ -107,6 +113,7 @@ test("a tool call runs on the chat's own state; only the call's tools run; what 
   assert.equal(payload.note, '- ქირა\n- ბრუნვა')
   assert.ok(payload.handoff, 'the seller message card')
   assert.equal(payload.voice, true)
+  assert.ok(Array.isArray(payload.quickReplies), 'a spoken answer carries the same next-step chips as a typed one')
   assert.equal(sessions.at(-1)!.title, 'რა ვკითხო გამყიდველს?', 'the chat is titled by its first spoken message')
   assert.equal(sessions.at(-1)!.turnCount, 3)
 
@@ -115,27 +122,36 @@ test("a tool call runs on the chat's own state; only the call's tools run; what 
   assert.equal(messages[1]!.payload!.note, undefined, 'the next turn starts empty')
 })
 
-test('the last exchange of a call is followed by its summary: length, a written summary, the facts, the listings, chips', async () => {
+test('a voice chat of three minutes or more ends with its summary: length, a written summary, the facts, the listings, chips', async () => {
   const s = session()
   await startCall(s, 'user-c')
   const tool = await callTool(s, 'get_listing', { ref: '#1' })
   assert.ok(tool.ui.chips.length > 0 && tool.ui.chips.length <= 2, 'up to two next-step chips with a tool')
   messages.length = 0
-  await saveTurn({ ...s, profile: { budgetGel: { value: 40000, status: 'known', turn: 1 } } }, 'კაფე მინდა', 'ერთი ვარიანტი ეკრანზეა.', true, { userSeconds: 5 })
+  await saveTurn(s, 'კაფე მინდა', 'ერთი ვარიანტი ეკრანზეა.', false, { userSeconds: 5 })
   assert.deepEqual(messages[0]!.payload, { voice: true, voiceSeconds: 5 }, "the client's spoken message carries how long they spoke")
+  mock.timers.enable({ apis: ['Date'], now: Date.now() + 185_000 })
+  try {
+    await saveTurn({ ...s, profile: { budgetGel: { value: 40000, status: 'known', turn: 1 } } }, 'მადლობა', 'წარმატებები.', true)
+  } finally {
+    mock.timers.reset()
+  }
   const summary = messages.at(-1)!
   assert.equal(summary.role, 'assistant')
   const payload = summary.payload as { callSummary: { seconds: number; facts: string[]; summary?: string }; cards: { id: string }[]; quickReplies: unknown[] }
-  assert.ok(payload.callSummary.seconds >= 0)
+  assert.ok(payload.callSummary.seconds >= 180)
   assert.match(payload.callSummary.summary!, /კლიენტი ეძებს/)
   assert.ok(payload.callSummary.facts.some((f) => /40\s000/.test(f)), 'the budget learned')
   assert.deepEqual(payload.cards.map((c) => c.id), [cafe.id], 'the listing shown during the call')
   assert.ok(payload.quickReplies.length > 0, 'next-step chips under the card')
-  // A short call that found nothing leaves no summary, and a call with nothing said none either.
+  // A shorter voice chat leaves no summary, even one that showed a listing: its messages carry the cards and the chips.
+  // A call with nothing said leaves nothing at all.
   await startCall(s, 'user-e')
+  await callTool(s, 'get_listing', { ref: '#1' })
   messages.length = 0
-  await saveTurn(s, 'გამარჯობა', 'გამარჯობა.', true)
+  await saveTurn(s, 'კაფე მინდა', 'ერთი ვარიანტი ეკრანზეა.', true)
   assert.equal(messages.length, 2, 'the exchange alone')
+  assert.deepEqual((messages[1]!.payload as { cards: { id: string }[] }).cards.map((c) => c.id), [cafe.id], 'the card stays with the answer')
   await startCall(s, 'user-e')
   messages.length = 0
   await saveTurn(s, '', '', true)

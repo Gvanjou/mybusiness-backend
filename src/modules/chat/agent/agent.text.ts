@@ -163,7 +163,9 @@ const GEORGIAN_LOOKALIKES: Record<string, string> = { 'լ': 'ლ' }
 const CYRILLIC_LOOKALIKES: Record<string, string> = { a: 'а', c: 'с', e: 'е', o: 'о', p: 'р', x: 'х', y: 'у', A: 'А', B: 'В', C: 'С', E: 'Е', H: 'Н', K: 'К', M: 'М', O: 'О', P: 'Р', T: 'Т', X: 'Х' }
 
 export function fixScript(text: string, locale: 'ka' | 'en' | 'ru'): string {
-  if (locale === 'ka') return text.replace(/[԰-֏]/g, (ch) => GEORGIAN_LOOKALIKES[ch] ?? ch)
+  // A Georgian word with Greek, Cyrillic or Armenian letters in it ("ασსაფრთხოა"): a lookalike becomes its Georgian
+  // letter, anything else is dropped. A word in another script on its own (Wolt, Glovo) stays.
+  if (locale === 'ka') return text.replace(/\p{L}+/gu, (word) => (/[ა-ჰ]/.test(word) ? word.replace(/[\u0370-\u03ff\u0400-\u04ff\u0530-\u058f]/g, (ch) => GEORGIAN_LOOKALIKES[ch] ?? '') : word))
   if (locale === 'ru') return text.replace(/[\p{L}]+/gu, (word) => (/[а-яё]/i.test(word) && /[a-z]/i.test(word) ? word.replace(/[a-zA-Z]/g, (ch) => CYRILLIC_LOOKALIKES[ch] ?? ch) : word))
   return text
 }

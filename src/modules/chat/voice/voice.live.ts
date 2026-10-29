@@ -55,8 +55,8 @@ const calls = new Map<string, { startedAt: number; locale: Locale; userId: strin
 // Recognition and the voice are locked to the call's language (final test: a silent room was transcribed as Uzbek
 // and answered in Russian).
 const BCP47: Record<Locale, string> = { ka: 'ka-GE', en: 'en-US', ru: 'ru-RU' }
-// A call shorter than this that found nothing leaves no summary card: the messages alone are enough.
-const SUMMARY_FROM_SECONDS = 10
+// A voice chat shorter than this leaves no summary card: its messages, with their cards and chips, are enough.
+const SUMMARY_FROM_SECONDS = 180
 
 // "Mhm. I have some experience…": fillers heard by the transcription are not part of what the client said. One at
 // the start, or standing alone between sentences, in any of the three languages.
@@ -188,11 +188,13 @@ export async function saveTurn(session: Session, spoken: string, assistantText: 
     call?.lines.push(`Client: ${userText}`)
   }
   if (assistantText || out.cards.length || out.compare || out.handoff || out.note) {
+    // The same next-step chips a typed answer gets, so the chat carries on by typing where the voice stopped.
+    const chips = await nextStepsAfterCall({ ...session, profile, locale })
     await chatRepository.addMessage(session.id, {
       role: 'assistant',
       content: assistantText,
       intent: 'voice',
-      payload: { cards: out.cards, compare: out.compare, handoff: out.handoff ?? undefined, sources: out.sources, note: out.note ?? undefined, voice: true, ...(extra.interrupted ? { interrupted: true } : {}) },
+      payload: { cards: out.cards, compare: out.compare, handoff: out.handoff ?? undefined, sources: out.sources, note: out.note ?? undefined, quickReplies: chips, voice: true, ...(extra.interrupted ? { interrupted: true } : {}) },
     })
     if (call) {
       call.turns++
@@ -208,7 +210,7 @@ export async function saveTurn(session: Session, spoken: string, assistantText: 
     // once used up a day's minutes).
     const used = minutes.get(call.userId)
     if (used) used.seconds = Math.max(0, used.seconds - Math.max(0, call.granted - Math.min(call.granted, seconds)))
-    if ((call.turns || call.cards.length) && (seconds >= SUMMARY_FROM_SECONDS || call.cards.length)) {
+    if (call.turns && seconds >= SUMMARY_FROM_SECONDS) {
       const facts = profileItems(profile, locale).map((i) => i.value)
       const [summary, chips] = await Promise.all([summarizeCall(session.id, call.lines, locale), nextStepsAfterCall(updated)])
       await chatRepository.addMessage(session.id, {

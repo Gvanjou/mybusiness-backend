@@ -218,8 +218,14 @@ export function withListings(s: Snapshot, upsert: CatalogListing[], remove: Set<
 }
 
 // The floor area: the site's own field, else what the seller wrote in the text ("21 კვ.მ").
+// The floor area, when it can be believed: sellers type the price into the area field ("62000 m²" on a $62 000 café),
+// so an area equal to the price, or absurd for the kind of business, counts as not stated.
+const WIDE = new Set(['land', 'warehouse', 'real_estate', 'manufacturing', 'agriculture'])
 export function areaOf(l: CatalogListing): number | null {
-  return l.area ?? l.insights?.premises.area_m2 ?? null
+  const a = l.area ?? l.insights?.premises.area_m2 ?? null
+  if (a === null) return null
+  if (l.price !== null && Math.abs(a - l.price) < 1) return null
+  return a >= 2 && a <= (WIDE.has(l.category) ? 200_000 : 5_000) ? a : null
 }
 
 // Listings to judge a price against: the same kind of business, in the same city when there are enough, and of a

@@ -236,7 +236,7 @@ export const toolDeclarations: FunctionDeclaration[] = [
   },
   {
     name: 'create_alert',
-    description: 'Save a search: the client is told in this chat when a new match is listed. Use when they ask, or agree after thin results. Defaults to the profile.',
+    description: 'Save a search: a notice appears at the top of this chat when a new match is listed (nothing by email or phone). Only after the client said yes to being told. Defaults to the profile.',
     parameters: {
       type: Type.OBJECT,
       properties: {
@@ -394,7 +394,7 @@ const executors: Record<string, Executor> = {
     const result = search(ctx.s, p, options)
     const top = result.ranked.slice(0, 3)
     if (result.wildcard) top.push(result.wildcard)
-    await ctx.progress('found', top.length)
+    if (top.length) await ctx.progress('found', top.length) // "matching options found" is said only when there are some
 
     // Numbers are given in rank order, so card #n and "#n" in the text are the same listing.
     const cards = top.map((r) => card(ctx, r.listing, r))
@@ -405,7 +405,7 @@ const executors: Record<string, Executor> = {
     ctx.state.contextListingId = undefined
     if (top.length === 0) {
       const options = relaxations(ctx.s, p, { track, strictSectors: categories.length > 0 }, result.pool.length)
-      return { matches: 0, ways_to_widen: options.map((o) => ({ option: o.kind, extra_listings: o.extra })), note: 'Nothing matches all criteria right now. Offer the widening options, or an alert for when one appears (create_alert).' }
+      return { matches: 0, ways_to_widen: options.map((o) => ({ option: o.kind, extra_listings: o.extra })), note: 'Nothing matches all criteria right now. Offer the widening options first; then ask whether to tell them when one appears (yes/no chips), and call create_alert only after a yes.' }
     }
     return {
       matches: result.ranked.length + (result.wildcard ? 1 : 0),
@@ -777,7 +777,7 @@ const executors: Record<string, Executor> = {
     try {
       const a = await alerts.create(ctx.userId, label, { categories, cities, maxPriceGel })
       ctx.out.alert = { id: a.id, label: a.label }
-      return { saved: true, label: a.label, note: 'Say in one line that you will show new matching listings here when they appear.' }
+      return { saved: true, label: a.label, note: 'Say how it works, in one or two lines: when a matching listing is added, a notice appears at the top of this chat, which they see when they open it; nothing comes by email or phone. They can remove the alert from the memory strip.' }
     } catch {
       return { error: 'Alerts are not available right now; suggest checking back later.' }
     }
