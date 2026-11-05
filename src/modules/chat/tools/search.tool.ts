@@ -229,7 +229,23 @@ export function search(s: CatalogSnapshot, p: Profile, o: SearchOptions): Search
     if (best && ranked[0] && best.score >= ranked[0].score * 0.85) wildcard = best
   }
   if (wildcard) wildcard = { ...wildcard, reasons: ['WILDCARD', ...wildcard.reasons] }
-  return { pool, ranked: main.filter((r) => r.listing.id !== wildcard?.listing.id), wildcard }
+  const budget = val(p, 'budgetGel')
+  const ranked2 = main.filter((r) => r.listing.id !== wildcard?.listing.id)
+  return { pool, ranked: budget ? budgetFirst(ranked2, budget) : ranked2, wildcard }
+}
+
+// The first results the client sees are mostly within budget: a listing a little over it (the search allows some
+// room to negotiate) may come third at most, and only one of them, while listings within budget are left (QA MB-01:
+// two of three shown cost 52 000 for a 50 000 budget).
+export function budgetFirst(ranked: Scored[], budget: number): Scored[] {
+  const over = (r: Scored) => r.listing.priceGel !== null && r.listing.priceGel > budget
+  const within = ranked.filter((r) => !over(r))
+  const above = ranked.filter(over)
+  const top = [...within.slice(0, 2), ...(above.length ? [above[0]!] : within.slice(2, 3))].slice(0, 3)
+  // The third place goes to the over-budget one only when it outscores the next listing within budget.
+  if (top.length === 3 && over(top[2]!) && within[2] && within[2].score >= top[2]!.score) top[2] = within[2]
+  const shown = new Set(top.map((r) => r.listing.id))
+  return [...top, ...ranked.filter((r) => !shown.has(r.listing.id))]
 }
 
 // Concrete ways to widen an empty or tiny result set, with how many listings each would add.

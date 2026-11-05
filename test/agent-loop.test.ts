@@ -436,3 +436,29 @@ test('earlier chats: only counted in the context; recalled on demand, nothing ap
   assert.equal(profile.items.some((i) => i.key === 'budgetGel'), false, 'the old budget is not applied to this chat')
   assert.equal(r.of('form').length, 0, 'no fallback form on a recall turn')
 })
+
+test('MB-01: after a form, the model reads the budget the client stated, not the range they clicked', async () => {
+  const seen: Step[] = []
+  script = async function* (params) {
+    seen.push(params)
+    yield { type: 'text', text: 'კარგი.' }
+    yield { type: 'done', model: 'stub', parts: [{ text: 'კარგი.' }], calls: [] }
+  }
+  const session: Session = {
+    id: '00000000-0000-4000-8000-000000000001', userId: 'test-user', title: 'ბიზნესი', locale: 'ka',
+    profile: { budgetGel: { value: 50000, status: 'known', turn: 1 } }, state: sessionStateSchema.parse({}), turnCount: 1, expiresAt: new Date(),
+  }
+  calls = 0
+  stored.length = 0
+  await agentTurn({
+    session,
+    input: { form: { answers: [{ field: 'budget', value: '80000', label: '30 000–80 000 ₾' }, { field: 'involvement', value: 'full_time', label: 'სრული განაკვეთი' }] } },
+    emit: async () => {},
+    signal: new AbortController().signal,
+  })
+  const said = (seen[0]!.contents.at(-1)!.parts ?? []).map((x) => x.text ?? '').join('\n')
+  assert.match(said, /≤ 50\s000/, 'the stated budget')
+  assert.doesNotMatch(said, /80\s000/, 'not the top of the range')
+  assert.match(said, /budget stays 50000 GEL/)
+  assert.ok(stored.some((m) => m.role === 'user' && m.content.startsWith('30 000–80 000 ₾')), 'the chat keeps the label that was clicked')
+})

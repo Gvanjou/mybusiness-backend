@@ -56,3 +56,16 @@ test('MB-08: a listing posted more than 90 days ago is flagged with its age, a r
   assert.equal(monthsListed(at('2026-09-20T10:00:00Z'), now), null)
   assert.equal(monthsListed({ createdAt: null } as Parameters<typeof monthsListed>[0], now), null)
 })
+
+test('MB-01: the first three results are mostly within budget; one a little over may come third', async () => {
+  const { budgetFirst } = await import('../src/modules/chat/tools/search.tool.js')
+  const r = (id: string, price: number, score: number) => ({ listing: { id, priceGel: price }, score, reasons: [] }) as unknown as Parameters<typeof budgetFirst>[0][number]
+  const ranked = [r('a', 52000, 0.9), r('b', 52500, 0.88), r('c', 48000, 0.8), r('d', 45000, 0.7), r('e', 30000, 0.5)]
+  const out = budgetFirst(ranked, 50000).map((x) => x.listing.id)
+  assert.deepEqual(out.slice(0, 3), ['c', 'd', 'a'], 'two within budget first, the best over-budget one third')
+  assert.deepEqual(out.slice(3), ['b', 'e'])
+  const strong = budgetFirst([r('a', 52000, 0.6), r('c', 48000, 0.9), r('d', 45000, 0.8), r('e', 30000, 0.7)], 50000).map((x) => x.listing.id)
+  assert.deepEqual(strong.slice(0, 3), ['c', 'd', 'e'], 'a better listing within budget takes third place')
+  const few = budgetFirst([r('a', 52000, 0.9), r('b', 55000, 0.8)], 50000).map((x) => x.listing.id)
+  assert.deepEqual(few, ['a', 'b'], 'with nothing within budget, the closest still show')
+})

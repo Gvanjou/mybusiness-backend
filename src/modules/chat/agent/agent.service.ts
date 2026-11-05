@@ -131,10 +131,10 @@ export async function agentTurn(params: Params): Promise<void> {
   // The conversation so far, as text (tool calls from earlier turns are not replayed; the fact sheets carry them).
   // A change the client made in the memory strip is spelled out with this message, so it outweighs older answers.
   // So is the question the last answers ended with: the model must not ask it again.
-  const notes = [editNote(state.profileEdited, profile, locale), askedNote(state.askedRecently)].filter(Boolean)
+  const notes = [editNote(state.profileEdited, profile, locale), askedNote(state.askedRecently), input.form ? formBudgetNote(input.form.answers, profile) : null].filter(Boolean)
   // The model reads a pasted link as the listing's number and name ("#5 საკონდიტრო, ვაკე"): a bare URL once got an
   // answer about the previous listing. The saved message keeps the link.
-  const modelText = pastedId ? userText.replace(/https?:\/\/\S*mybusiness\.ge\/\S+/i, `#${refOf(state, pastedId)} ${shortName(s.byId.get(pastedId)!, locale)}`) : userText
+  const modelText = input.form ? formText(input.form, profile, locale) : pastedId ? userText.replace(/https?:\/\/\S*mybusiness\.ge\/\S+/i, `#${refOf(state, pastedId)} ${shortName(s.byId.get(pastedId)!, locale)}`) : userText
   // A message that changes the subject (a kind of business or a budget, no listing named) leaves the old focus
   // behind, so the next-step chips follow the new topic, not "#1 car wash".
   if (!pastedId && !refsIn(userText, state).length && (categoriesNamed(userText).length || statedMoney(userText, s.rates))) state.contextListingId = undefined
@@ -510,6 +510,22 @@ function editNote(keys: string[], profile: Session['profile'], locale: Locale): 
   })
   const budget = keys.includes('budgetGel') ? ' The budget changed: call search_listings again with it before you answer, so new matches appear.' : ''
   return `(Note from the app, not from the client: in the memory strip the client just changed: ${changes.join('; ')}. These replace anything said earlier in the chat. Start your reply with one short line confirming the change, then use the new values.${budget})`
+}
+
+// Form answers as the model reads them. A budget range the client picked while they had already said a number inside
+// it ("50 000 ₾ მაქვს", then "30 000–80 000 ₾") is their number, not the range: the model read the range's top as a
+// new budget and announced "your budget is now up to 80 000 ₾" (QA MB-01). The chat keeps the label they clicked.
+function formText(form: NonNullable<SendMessage['form']>, profile: Session['profile'], locale: Locale): string {
+  const budget = val(profile, 'budgetGel')
+  const answers = form.answers.map((a) => (a.field === 'budget' && budget && Number(a.value) !== budget ? `≤ ${formatGel(budget, locale)}` : a.label))
+  return [answers.join(', '), form.note].filter(Boolean).join('. ')
+}
+
+function formBudgetNote(answers: { field: string; value: string }[], profile: Session['profile']): string | null {
+  const budget = val(profile, 'budgetGel')
+  const picked = answers.find((a) => a.field === 'budget')
+  if (!budget || !picked || Number(picked.value) === budget) return null
+  return `(Note from the app, not from the client: the budget stays ${budget} GEL, as the client stated it; the form's range only grouped it. It did not change: don't say it was updated, and search with max_price_gel ${budget}.)`
 }
 
 // The closing questions of the last answers, next to the client's message: a rule in the brief alone was not enough.
