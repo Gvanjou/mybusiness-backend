@@ -1,6 +1,7 @@
 import { formatGel, formatNumber, pick, type Locale, type Localized } from '../../../shared/i18n/locale.js'
 import { categoryLabel, cityLabel } from '../../catalog/catalog.labels.js'
 import { approx } from '../../fx/fx.service.js'
+import { SECTOR_OPTIONS } from '../agent/agent.fallback.js'
 import type { Profile, ProfileKey } from '../profile/profile.model.js'
 import type { ReasonCode } from '../tools/search.tool.js'
 
@@ -110,6 +111,21 @@ export type ProfileItem = { key: ProfileKey; label: string; value: string; infer
 const SYMBOL: Record<string, string> = { USD: '$', EUR: '€' }
 const SELF_EXPLANATORY = new Set<ProfileKey>(['budgetGel', 'cities', 'sectors'])
 
+// Business types as the client chose them: a form option that stands for several site categories ("კაფე / რესტორანი"
+// = restaurants + bar_nightclub) is shown by its own label, not as every category behind it (QA MB-02).
+function sectorsLabel(keys: string[], locale: Locale): string {
+  const left = new Set(keys)
+  const out: string[] = []
+  for (const [value, label] of SECTOR_OPTIONS) {
+    const group = value.split(',')
+    if (group.length > 1 && group.every((k) => left.has(k))) {
+      out.push(pick(label, locale))
+      group.forEach((k) => left.delete(k))
+    }
+  }
+  return [...out, ...keys.filter((k) => left.has(k)).map((c) => categoryLabel(c, locale))].join(', ')
+}
+
 export function profileItems(p: Profile, locale: Locale): ProfileItem[] {
   const items: ProfileItem[] = []
   for (const key of Object.keys(fieldLabels) as ProfileKey[]) {
@@ -123,7 +139,7 @@ export function profileItems(p: Profile, locale: Locale): ProfileItem[] {
       value = asSaid ? `≤ ${SYMBOL[asSaid.currency] ?? asSaid.currency}${formatNumber(asSaid.amount, locale)} (≈ ${formatGel(approx(Number(f.value)), locale)})` : `≤ ${formatGel(Number(f.value), locale)}`
     }
     else if (key === 'cities') value = p.locationFlexible?.value === true || (f.value as string[]).length === 0 ? pick(t('ნებისმიერი', 'Any', 'Любой'), locale) : (f.value as string[]).map((c) => cityLabel(c, locale)).join(', ')
-    else if (key === 'sectors') value = (f.value as string[]).map((c) => categoryLabel(c, locale)).join(', ') || pick(t('ნებისმიერი', 'Any', 'Любая'), locale)
+    else if (key === 'sectors') value = sectorsLabel(f.value as string[], locale) || pick(t('ნებისმიერი', 'Any', 'Любая'), locale)
     else value = valueLabels[String(f.value)] ? pick(valueLabels[String(f.value)]!, locale) : String(f.value)
     // A value that says nothing on its own ("ცოტა") is shown with its label ("გამოცდილება: ცოტა").
     const label = pick(fieldLabels[key]!, locale)

@@ -24,6 +24,8 @@ export type ReasonCode =
   | 'PARTNERSHIP_SHARE'
   | 'WILDCARD'
 
+const STALE_MS = 90 * 86_400_000 // as STALE_DAYS in agent.facts
+
 export type Scored = { listing: CatalogListing; score: number; reasons: ReasonCode[] }
 
 export type SearchResult = {
@@ -151,7 +153,9 @@ function score(l: CatalogListing, p: Profile, track: Track, s: CatalogSnapshot):
   if (assetClass === 'partnership') reasons.push('PARTNERSHIP_SHARE')
 
   const total = parts.reduce((a, [wt]) => a + wt, 0)
-  const value = total === 0 ? 0.5 : parts.reduce((a, [wt, v]) => a + wt * v, 0) / total
+  // A listing posted long ago may be sold already: still shown, after fresher equals (QA MB-08).
+  const stale = l.createdAt && Date.now() - Date.parse(l.createdAt) > STALE_MS ? 0.85 : 1
+  const value = (total === 0 ? 0.5 : parts.reduce((a, [wt, v]) => a + wt * v, 0) / total) * stale
   return { listing: l, score: Math.round(value * 1000) / 1000, reasons }
 }
 

@@ -335,6 +335,16 @@ const TAG = {
   overBudget: t('ბიუჯეტზე {v} ₾-ით მეტი', '{v} ₾ over budget', 'На {v} ₾ выше бюджета'),
   property: t('ქონებაა, არა ბიზნესი', 'Property, not a business', 'Недвижимость, не бизнес'),
   doubt: t('გადასამოწმებელია', 'Verify the claims', 'Проверьте данные'),
+  stale: t('{n} თვის წინ გამოქვეყნდა — გადაამოწმეთ, ისევ იყიდება თუ არა', 'Posted {n} months ago — check it is still for sale', 'Опубликовано {n} мес. назад — уточните, продаётся ли ещё'),
+}
+
+// Listings stay on the site until the seller removes them; one posted this long ago may already be sold (QA MB-08).
+export const STALE_DAYS = 90
+export function monthsListed(l: CatalogListing, now = Date.now()): number | null {
+  const at = l.createdAt ? Date.parse(l.createdAt) : NaN
+  if (Number.isNaN(at)) return null
+  const days = (now - at) / 86_400_000
+  return days > STALE_DAYS ? Math.floor(days / 30) : null
 }
 
 type Tag = ListingCard['reasons'][number]
@@ -344,6 +354,8 @@ function tagsFor(l: CatalogListing, s: CatalogSnapshot, locale: Locale, budget?:
   const out: Tag[] = []
   const isProperty = ['real_estate', 'commercial_space', 'offices', 'warehouse', 'land'].includes(l.category)
   if (budget && l.priceGel !== null && l.priceGel > budget) out.push({ code: 'OVER_BUDGET', label: say(TAG.overBudget, locale, { v: num(overBy(l, budget), locale) }), tone: 'warn' })
+  const stale = monthsListed(l)
+  if (stale) out.push({ code: 'STALE', label: say(TAG.stale, locale, { n: stale }), tone: 'warn' })
   if (i?.isOperating === false) out.push({ code: 'CLOSED', label: say(TAG.closed, locale), tone: 'warn' })
   if (doubtsOf(l, s, locale, areaOf(l)).length) out.push({ code: 'CHECK_CLAIMS', label: say(TAG.doubt, locale), tone: 'warn' })
   if (isProperty) out.push({ code: 'PROPERTY_NOT_BUSINESS', label: say(TAG.property, locale), tone: 'info' })

@@ -20,7 +20,7 @@ import { marketFacts, scoreListings } from '../tools/facts.tool.js'
 import { relaxations, search } from '../tools/search.tool.js'
 import type { QuickReply } from '../planner/planner.service.js'
 import { cardFor, compareTable, decimal, factSheet, idOfRef, refOf, rememberPlace, shortName, type CompareTable } from './agent.facts.js'
-import { bucketFloor, formWanted, missingKeyFacts } from './agent.fallback.js'
+import { bucketFloor, formWanted, keepStatedBudget, missingKeyFacts } from './agent.fallback.js'
 import type { IntakeForm } from './agent.model.js'
 
 // Everything the assistant can do besides talking: listings read live from mybusiness.ge, location and
@@ -358,7 +358,7 @@ const executors: Record<string, Executor> = {
     const turn = ctx.turn
     const categories = categoryArgs(args.categories, (c) => ctx.s.categories.includes(c) || PROPERTY.includes(c))
     const cities = ((args.cities as string[] | undefined) ?? []).map((c) => normalizeCity(c, ctx.s.cities)).filter((c): c is string => c !== null)
-    const maxPrice = typeof args.max_price_gel === 'number' && args.max_price_gel > 0 ? args.max_price_gel : undefined
+    const maxPrice = typeof args.max_price_gel === 'number' && args.max_price_gel > 0 ? keepStatedBudget(args.max_price_gel, budgetOf(ctx)) : undefined
     // This search's filters on top of the stored profile.
     const p: Profile = { ...ctx.profile }
     if (categories.length) p.sectors = { value: categories, status: 'known', turn }
@@ -673,12 +673,12 @@ const executors: Record<string, Executor> = {
     const currency = typeof args.budget_currency === 'string' && /^(GEL|USD|EUR)$/i.test(args.budget_currency) ? args.budget_currency.toUpperCase() : 'GEL'
     const asSaid = amount !== null ? toGel(amount, currency, ctx.s.rates) : null
     if (asSaid && asSaid >= 500) {
-      patch.budgetGel = Math.round(asSaid)
+      patch.budgetGel = Math.round(currency === 'GEL' ? keepStatedBudget(asSaid, val(ctx.profile, 'budgetGel')) : asSaid)
       if (currency !== 'GEL') patch.budgetOriginal = { amount, currency }
     } else if (typeof args.budget_gel === 'number' && args.budget_gel >= 500) {
       // Never let a listing price slip in as the budget: it must not equal a shown price.
       const shownPrices = ctx.state.lastShown.map((id) => ctx.s.byId.get(id)?.priceGel ?? -1)
-      if (!shownPrices.some((p) => Math.abs(p - Number(args.budget_gel)) < 1)) patch.budgetGel = Math.round(args.budget_gel)
+      if (!shownPrices.some((p) => Math.abs(p - Number(args.budget_gel)) < 1)) patch.budgetGel = Math.round(keepStatedBudget(args.budget_gel, val(ctx.profile, 'budgetGel')))
     }
     if (enumOk(args.goal, GOALS)) patch.goal = args.goal
     if (enumOk(args.involvement, INVOLVEMENT)) patch.involvement = args.involvement

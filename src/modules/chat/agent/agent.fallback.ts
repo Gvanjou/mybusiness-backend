@@ -69,6 +69,14 @@ export function bucketFloor(top: number): number {
   return i > 0 ? BUDGET[i - 1]![0] : 0
 }
 
+// A budget range's top (80 000 for "30 000–80 000 ₾") is not a new budget when the client stated one inside that
+// range: the model passes the range it saw in the form, the client meant their own number (QA MB-01: 50 000 became
+// 80 000 and listings at 52 000 were shown as fitting).
+export function keepStatedBudget(n: number, stated: number | undefined): number {
+  const isTop = BUDGET.some(([top]) => top === Math.round(n))
+  return isTop && stated && stated > bucketFloor(Math.round(n)) && stated < n ? stated : n
+}
+
 export const CITIES: [string, Localized][] = [
   ['Tbilisi', t('თბილისი', 'Tbilisi', 'Тбилиси')],
   ['Batumi', t('ბათუმი', 'Batumi', 'Батуми')],
